@@ -391,3 +391,402 @@ struct crown_map {
     const char **types; // type tag per value
 };
 
+// ============================================================
+// Crown Runtime: JSON Parser (string -> arrays/maps)
+// ============================================================
+
+#include <ctype.h>
+
+// Forward declarations
+void* crown_json_parse_value(const char **s, const char **type);
+
+// Skip whitespace
+static void skip_ws(const char **s) {
+    while (isspace(**s)) (*s)++;
+}
+
+// Parse string literal
+static char* parse_string(const char **s) {
+    (*s)++; // skip opening "
+    const char *start = *s;
+    size_t cap = 16, len = 0;
+    char *buf = malloc(cap);
+    while (**s && **s != '"') {
+        char c = **s;
+        if (c == '\\') {
+            (*s)++;
+            if (**s == 'n') c = '\n';
+            else if (**s == 't') c = '\t';
+            else if (**s == 'r') c = '\r';
+            else c = **s;
+        }
+        if (len+1 >= cap) { cap*=2; buf=realloc(buf,cap); }
+        buf[len++] = c;
+        (*s)++;
+    }
+    buf[len] = '\0';
+    if (**s == '"') (*s)++;
+    return buf;
+}
+
+// Parse number
+static long long parse_number(const char **s) {
+    long long val = 0;
+    int sign = 1;
+    if (**s == '-') { sign=-1; (*s)++; }
+    while (isdigit(**s)) {
+        val = val*10 + (**s - '0');
+        (*s)++;
+    }
+    return val*sign;
+}
+
+void* crown_json_parse_array(const char **s, const char **type) {
+    (*s)++; // skip [
+    struct crown_array *arr = malloc(sizeof(struct crown_array));
+    arr->len=0; arr->items=NULL; arr->types=NULL;
+    skip_ws(s);
+    while (**s && **s != ']') {
+        const char *elem_type=NULL;
+        void *elem = crown_json_parse_value(s,&elem_type);
+        arr->len++;
+        arr->items = realloc(arr->items, arr->len*sizeof(void*));
+        arr->types = realloc(arr->types, arr->len*sizeof(char*));
+        arr->items[arr->len-1]=elem;
+        arr->types[arr->len-1]=elem_type;
+        skip_ws(s);
+        if (**s == ',') { (*s)++; skip_ws(s); }
+    }
+    if (**s == ']') (*s)++;
+    *type="array";
+    return arr;
+}
+
+void* crown_json_parse_map(const char **s, const char **type) {
+    (*s)++; // skip {
+    struct crown_map *map = malloc(sizeof(struct crown_map));
+    map->len=0; map->keys=NULL; map->values=NULL; map->types=NULL;
+    skip_ws(s);
+    while (**s && **s != '}') {
+        char *key=parse_string(s);
+        skip_ws(s); if (**s==':') (*s)++;
+        skip_ws(s);
+        const char *val_type=NULL;
+        void *val=crown_json_parse_value(s,&val_type);
+        map->len++;
+        map->keys=realloc(map->keys,map->len*sizeof(char*));
+        map->values=realloc(map->values,map->len*sizeof(void*));
+        map->types=realloc(map->types,map->len*sizeof(char*));
+        map->keys[map->len-1]=key;
+        map->values[map->len-1]=val;
+        map->types[map->len-1]=val_type;
+        skip_ws(s);
+        if (**s==',') { (*s)++; skip_ws(s); }
+    }
+    if (**s=='}') (*s)++;
+    *type="map";
+    return map;
+}
+
+void* crown_json_parse_value(const char **s, const char **type) {
+    skip_ws(s);
+    if (**s == '"') {
+        *type="string";
+        return parse_string(s);
+    }
+    if (**s == '{') {
+        return crown_json_parse_map(s,type);
+    }
+    if (**s == '[') {
+        return crown_json_parse_array(s,type);
+    }
+    if (isdigit(**s) || **s=='-') {
+        *type="i64";
+        long long *n=malloc(sizeof(long long));
+        *n=parse_number(s);
+        return n;
+    }
+    if (strncmp(*s,"true",4)==0) {
+        *type="i64"; long long *n=malloc(sizeof(long long)); *n=1;
+        *s+=4; return n;
+    }
+    if (strncmp(*s,"false",5)==0) {
+        *type="i64"; long long *n=malloc(sizeof(long long)); *n=0;
+        *s+=5; return n;
+    }
+    if (strncmp(*s,"null",4)==0) {
+        *type="null"; *s+=4; return NULL;
+    }
+    *type="unknown";
+    return NULL;
+}
+
+// Public entry point
+void* crown_json_parse(const char *src, const char **type) {
+    return crown_json_parse_value(&src,type);
+}
+
+make pets = readjson("{\"pets\": [\"dog\",\"cat\"]}")
+say pets
+
+// ============================================================
+// Crown Runtime: JSON Writing to File
+// ============================================================
+
+#include <errno.h>
+
+// Recursively print JSON to file
+static void crown_json_fprint_value(FILE *f, void *val, const char *type);
+
+static void crown_json_fprint_string(FILE *f, const char *s) {
+    fputc('"', f);
+    for (; *s; s++) {
+        if (*s == '"' || *s == '\\') {
+            fputc('\\', f);
+            fputc(*s, f);
+        } else if (*s == '\n') {
+            fputs("\\n", f);
+        } else if (*s == '\t') {
+            fputs("\\t", f);
+        } else {
+            fputc(*s, f);
+        }
+    }
+    fputc('"', f);
+}
+
+static void crown_json_fprint_array(FILE *f, struct crown_array *arr) {
+    fputc('[', f);
+    for (size_t i=0; i<arr->len; i++) {
+        if (i>0) fputc(',', f);
+        crown_json_fprint_value(f, arr->items[i], arr->types[i]);
+    }
+    fputc(']', f);
+}
+
+static void crown_json_fprint_map(FILE *f, struct crown_map *map) {
+    fputc('{', f);
+    for (size_t i=0; i<map->len; i++) {
+        if (i>0) fputc(',', f);
+        crown_json_fprint_string(f, map->keys[i]);
+        fputc(':', f);
+        crown_json_fprint_value(f, map->values[i], map->types[i]);
+    }
+    fputc('}', f);
+}
+
+static void crown_json_fprint_value(FILE *f, void *val, const char *type) {
+    if (!val) { fputs("null", f); return; }
+    if (strcmp(type,"string")==0) {
+        crown_json_fprint_string(f, (char*)val);
+    } else if (strcmp(type,"i64")==0) {
+        fprintf(f, "%lld", *(long long*)val);
+    } else if (strcmp(type,"array")==0) {
+        crown_json_fprint_array(f, (struct crown_array*)val);
+    } else if (strcmp(type,"map")==0) {
+        crown_json_fprint_map(f, (struct crown_map*)val);
+    } else if (strcmp(type,"null")==0) {
+        fputs("null", f);
+    } else {
+        fputs("\"<unknown>\"", f);
+    }
+}
+
+// Public entry point
+int crown_json_write_file(const char *filename, void *val, const char *type) {
+    FILE *f = fopen(filename, "w");
+    if (!f) return errno;
+    crown_json_fprint_value(f, val, type);
+    fclose(f);
+    return 0; // success
+}
+
+// ============================================================
+// JSON Read from File
+// ============================================================
+#include <ctype.h>
+
+static char* crown_read_file_to_str(const char *filename) {
+    FILE *f = fopen(filename, "rb");
+    if (!f) return NULL;
+    fseek(f,0,SEEK_END);
+    long sz = ftell(f);
+    fseek(f,0,SEEK_SET);
+    char *buf = (char*)malloc(sz+1);
+    fread(buf,1,sz,f);
+    buf[sz]=0;
+    fclose(f);
+    return buf;
+}
+
+// Recursive descent parser helpers (reuse earlier JSON parser)
+void* crown_json_parse(const char *text); // assume we already defined earlier
+
+// Entry: read JSON file into runtime value
+void* crown_json_read_file(const char *filename) {
+    char *src = crown_read_file_to_str(filename);
+    if (!src) return NULL;
+    void *val = crown_json_parse(src);
+    free(src);
+    return val;
+}
+
+// ============================================================
+// JSON Runtime Integration
+// ============================================================
+
+extern void* crown_json_parse(const char* text);
+
+void* crown_json_read_file(const char* filename) {
+    FILE* f = fopen(filename,"rb");
+    if(!f) return NULL;
+    fseek(f,0,SEEK_END);
+    long sz=ftell(f);
+    fseek(f,0,SEEK_SET);
+    char* buf=(char*)malloc(sz+1);
+    fread(buf,1,sz,f);
+    buf[sz]=0;
+    fclose(f);
+    void* val = crown_json_parse(buf);
+    free(buf);
+    return val;
+}
+
+int crown_json_write_file(const char* filename, void* value) {
+    FILE* f=fopen(filename,"wb");
+    if(!f) return -1;
+    char* str = crown_json_stringify(value); // assume implemented earlier
+    fputs(str,f);
+    fclose(f);
+    free(str);
+    return 0;
+}
+
+// ============================================================
+// JSON RUNTIME IMPLEMENTATION
+// ============================================================
+
+#include <string.h>
+#include <ctype.h>
+
+// Forward declarations from crown_runtime.c
+extern void* crown_array_new(int n);
+extern void  crown_array_set(void* arr, int idx, void* val);
+extern void* crown_map_new();
+extern void  crown_map_set(void* map, const char* key, void* val);
+extern char* crown_json_stringify(void* value);
+
+// --------- JSON Parser Helpers ---------
+
+static const char* skip_ws(const char* s) {
+    while (*s && isspace((unsigned char)*s)) s++;
+    return s;
+}
+
+static void* parse_value(const char** sp);
+
+static void* parse_array(const char** sp) {
+    const char* s = skip_ws(*sp);
+    if (*s != '[') return NULL;
+    s++;
+    void* arr = crown_array_new(0);
+    int idx=0;
+    while (1) {
+        s = skip_ws(s);
+        if (*s == ']') { s++; break; }
+        void* val = parse_value(&s);
+        crown_array_set(arr, idx++, val);
+        s = skip_ws(s);
+        if (*s == ',') { s++; continue; }
+        if (*s == ']') { s++; break; }
+    }
+    *sp = s;
+    return arr;
+}
+
+static void* parse_string(const char** sp) {
+    const char* s = *sp;
+    if (*s != '"') return NULL;
+    s++;
+    const char* start = s;
+    while (*s && *s != '"') s++;
+    size_t len = s - start;
+    char* out = (char*)malloc(len+1);
+    memcpy(out, start, len);
+    out[len]=0;
+    if (*s=='"') s++;
+    *sp = s;
+    return out;
+}
+
+static void* parse_object(const char** sp) {
+    const char* s = skip_ws(*sp);
+    if (*s != '{') return NULL;
+    s++;
+    void* map = crown_map_new();
+    while (1) {
+        s = skip_ws(s);
+        if (*s == '}') { s++; break; }
+        void* key = parse_string(&s);
+        s = skip_ws(s);
+        if (*s == ':') s++;
+        void* val = parse_value(&s);
+        crown_map_set(map, (const char*)key, val);
+        free(key);
+        s = skip_ws(s);
+        if (*s == ',') { s++; continue; }
+        if (*s == '}') { s++; break; }
+    }
+    *sp = s;
+    return map;
+}
+
+static void* parse_value(const char** sp) {
+    const char* s = skip_ws(*sp);
+    void* val=NULL;
+    if (*s == '"') { val = parse_string(&s); }
+    else if (*s == '{') { val = parse_object(&s); }
+    else if (*s == '[') { val = parse_array(&s); }
+    else if (isdigit((unsigned char)*s) || *s=='-') {
+        char* end;
+        long v = strtol(s,(char**)&end,10);
+        long* num=(long*)malloc(sizeof(long));
+        *num=v; val=num; s=end;
+    } else if (!strncmp(s,"true",4)) { int* b=(int*)malloc(sizeof(int));*b=1;val=b;s+=4;}
+    else if (!strncmp(s,"false",5)){int* b=(int*)malloc(sizeof(int));*b=0;val=b;s+=5;}
+    else if (!strncmp(s,"null",4)) { val=NULL; s+=4; }
+    *sp = s;
+    return val;
+}
+
+// --------- Public Entry Points ---------
+
+void* crown_json_parse(const char* text) {
+    const char* s=text;
+    return parse_value(&s);
+}
+
+void* crown_json_read_file(const char* filename) {
+    FILE* f=fopen(filename,"rb");
+    if(!f) return NULL;
+    fseek(f,0,SEEK_END); long sz=ftell(f);
+    fseek(f,0,SEEK_SET);
+    char* buf=(char*)malloc(sz+1);
+    fread(buf,1,sz,f);
+    buf[sz]=0;
+    fclose(f);
+    void* val = crown_json_parse(buf);
+    free(buf);
+    return val;
+}
+
+int crown_json_write_file(const char* filename, void* value) {
+    FILE* f=fopen(filename,"wb");
+    if(!f) return -1;
+    char* str = crown_json_stringify(value);
+    fputs(str,f);
+    fclose(f);
+    free(str);
+    return 0;
+}
+
