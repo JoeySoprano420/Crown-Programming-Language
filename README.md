@@ -1,5 +1,10 @@
 # Crown-Programming-Language
 
+crownc program.crown --jit      # JIT execution
+crownc program.crown --aot      # AOT native binary
+python Crown_Script.py file.crown  # interpreted
+
+
 Perfect timing. 👑
 Now that *Crown Script* has evolved into a real systems + general-purpose language with AOT, JIT, LLVM, and a VM, here’s a **full monolithic specification / description** you can use as a *reference manual* for the language.
 
