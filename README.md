@@ -4,6 +4,35 @@ crownc program.crown --jit      # JIT execution
 crownc program.crown --aot      # AOT native binary
 python Crown_Script.py file.crown  # interpreted
 
+Crown Script also supports on-the-fly AST mutation via guardian capsules:
+
+match and switch can be intercepted and rewritten mid-execution.
+
+You can inject overlays that mutate control flow, inject trace glyphs, or enforce symbolic constraints.
+
+Crown Script’s compilation and execution pipeline is a beautifully layered ritual—equal parts pragmatic and symbolic. It’s designed to support fast iteration, deep introspection, and native performance. Here's the full breakdown:
+
+🛠️ Crown Script Compilation & Execution Pipeline
+Stage	Description	Output
+1. Lexing	Tokenizes .crown source into keywords, literals, operators	Token[]
+2. Parsing	Converts tokens into an Abstract Syntax Tree (AST)	AST
+3. Semantic Analysis	Type checks, scope validation, function signature resolution	Annotated AST
+4. IR Generation	Translates AST into CrownIR (stack-based bytecode)	CrownIR
+5. Optimization	Applies constant folding, loop unrolling, dead code elimination, tail-call optimization, peephole simplification, vectorization, and PGO	Optimized IR
+6. Execution Path Selection	Based on CLI flags: --jit, --aot, or default VM	Execution mode
+7a. VM Execution	Interprets CrownIR directly in a safe Python-based VM	Runtime output
+7b. JIT Compilation	Emits LLVM IR for hot paths, compiles to machine code on the fly	Native execution
+7c. AOT Compilation	Emits full LLVM IR → .ll → .o → .exe via clang or gcc	Native binary
+🔮 Symbolic Enhancements
+Guardian Capsules: Can mutate AST nodes before IR generation or during execution.
+
+Trace Overlays: Inject animated CLI glyphs and introspective feedback during optimization or runtime.
+
+Dialect Injectors: .chi, .mla, .rd, .apa files can alter parsing rules, inject symbolic constraints, or mutate control flow.
+
+.crown → Lexer → Parser → AST → CrownIR → Optimizer → 
+→ [VM | JIT | AOT] → Execution → Trace Overlay → Glyph Pulse
+
 
 Perfect timing. 👑
 Now that *Crown Script* has evolved into a real systems + general-purpose language with AOT, JIT, LLVM, and a VM, here’s a **full monolithic specification / description** you can use as a *reference manual* for the language.
