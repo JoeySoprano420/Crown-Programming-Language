@@ -2979,3 +2979,34 @@ def _get_or_insert_global_str(self, s: str):
 
 Codegen._get_or_insert_global_str = _get_or_insert_global_str
 
+def codegen_value_type(self, val):
+    # Return runtime type string for lowering into crown_runtime
+    from llvmlite import ir
+    if isinstance(val.type, ir.IntType) and val.type.width == 64:
+        return "i64"
+    if isinstance(val.type, ir.DoubleType):
+        return "double"
+    if isinstance(val.type, ir.PointerType) and val.type.pointee.name == "struct.crown_array":
+        return "array"
+    if isinstance(val.type, ir.PointerType) and val.type.pointee.name == "struct.crown_map":
+        return "map"
+    if isinstance(val.type, ir.PointerType) and val.type.pointee == ir.IntType(8):
+        return "string"
+    return "unknown"
+
+def lower_readjson(self, builder, arg):
+    from llvmlite import ir
+    fnty = ir.FunctionType(ir.VoidType().as_pointer(), [ir.IntType(8).as_pointer(), ir.PointerType(ir.IntType(8).as_pointer())])
+    fn = self.module.globals.get("crown_json_parse")
+    if fn is None:
+        fn = ir.Function(self.module, fnty, name="crown_json_parse")
+    return builder.call(fn,[arg])
+
+
+def lower_writejson(self, builder, filename, value, type_str):
+    from llvmlite import ir
+    fnty = ir.FunctionType(ir.IntType(32), [ir.IntType(8).as_pointer(), ir.VoidType().as_pointer(), ir.IntType(8).as_pointer()])
+    fn = self.module.globals.get("crown_json_write_file")
+    if fn is None:
+        fn = ir.Function(self.module, fnty, name="crown_json_write_file")
+    return builder.call(fn, [filename, value, type_str])
