@@ -1,0 +1,7 @@
+declare %struct.CrownValue @crown_make_array()
+declare %struct.CrownValue @crown_make_map()
+declare %struct.CrownValue @crown_make_str(i8*)
+declare void @crown_array_push(%struct.CrownValue, %struct.CrownValue)
+declare %struct.CrownValue @crown_array_get(%struct.CrownValue, i64)
+declare void @crown_map_set(%struct.CrownValue, i8*, %struct.CrownValue)
+declare %struct.CrownValue @crown_map_get(%struct.CrownValue, i8*)
