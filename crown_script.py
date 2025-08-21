@@ -1878,3 +1878,113 @@ def crown_codegen_runtime_decls(module):
 with open("crown_runtime.c","w") as f:
     f.write(CROWN_RUNTIME_C)
 
+# ============================================================
+# EXTENDED CODEGEN: ArrayLit, MapLit, Match Lowering
+# ============================================================
+
+class CrownLLVMCodegen:
+    def __init__(self, module: ir.Module, builder: ir.IRBuilder, symtab: dict):
+        self.module = module
+        self.builder = builder
+        self.symtab = symtab
+        crown_codegen_runtime_decls(self.module)  # ensure helpers declared
+
+    # ---- Expressions ----
+    def codegen_expr(self, node):
+        if isinstance(node, Literal):
+            if isinstance(node.value, bool) or isinstance(node.value, int):
+                fn = self.module.globals.get("crown_make_int")
+                return self.builder.call(fn, [ir.Constant(ir.IntType(64), int(node.value))])
+            if isinstance(node.value, str):
+                fn = self.module.globals.get("crown_make_str")
+                s = self.builder.global_string_ptr(node.value)
+                return self.builder.call(fn, [s])
+        elif isinstance(node, ArrayLit):
+            # Create array
+            make_arr = self.module.globals.get("crown_make_array")
+            arr_val = self.builder.call(make_arr, [])
+            push_fn = self.module.globals.get("crown_array_push")
+            for item in node.items:
+                val = self.codegen_expr(item)
+                self.builder.call(push_fn, [arr_val, val])
+            return arr_val
+        elif isinstance(node, MapLit):
+            make_map = self.module.globals.get("crown_make_map")
+            map_val = self.builder.call(make_map, [])
+            set_fn = self.module.globals.get("crown_map_set")
+            for k, v in node.pairs:
+                key_val = self.codegen_expr(k)
+                val_val = self.codegen_expr(v)
+                # convert key to string (assume string for simplicity)
+                if isinstance(k, Literal) and isinstance(k.value, str):
+                    key_ptr = self.builder.global_string_ptr(k.value)
+                else:
+                    raise RuntimeError("Only string keys supported in map literals (for now)")
+                self.builder.call(set_fn, [map_val, key_ptr, val_val])
+            return map_val
+        elif isinstance(node, Match):
+            # Desugar Match into if/else chains
+            val = self.codegen_expr(node.expr)
+            result = None
+            end_bb = self.builder.append_basic_block("match_end")
+            for pat, body in node.cases:
+                # For now only handle ConstPat
+                if isinstance(pat, ConstPat):
+                    cmp_val = self.codegen_expr(pat.expr)
+                    cmp = self.builder.icmp_signed("==", 
+                        self.builder.extract_value(val, 1),
+                        self.builder.extract_value(cmp_val, 1))
+                    then_bb = self.builder.append_basic_block("match_then")
+                    else_bb = self.builder.append_basic_block("match_else")
+                    self.builder.cbranch(cmp, then_bb, else_bb)
+                    self.builder.position_at_end(then_bb)
+                    for st in body:
+                        self.codegen_stmt(st)
+                    self.builder.branch(end_bb)
+                    self.builder.position_at_end(else_bb)
+            if node.default:
+                for st in node.default:
+                    self.codegen_stmt(st)
+                self.builder.branch(end_bb)
+            self.builder.position_at_end(end_bb)
+            return result
+        else:
+            raise NotImplementedError(f"Codegen not implemented for {type(node).__name__}")
+
+    # ---- Statements ----
+    def codegen_stmt(self, node):
+        if isinstance(node, Say):
+            val = self.codegen_expr(node.expr)
+            dbg_fn = self.module.globals.get("crown_debug_print")
+            self.builder.call(dbg_fn, [val])
+        elif isinstance(node, Make):
+            v = self.codegen_expr(node.expr)
+            self.symtab[node.name] = v
+        elif isinstance(node, Assign):
+            v = self.codegen_expr(node.expr)
+            self.symtab[node.name] = v
+        elif isinstance(node, Return):
+            v = self.codegen_expr(node.expr)
+            self.builder.ret(v)
+        elif isinstance(node, If):
+            cond_val = self.codegen_expr(node.cond)
+            cmp = self.builder.icmp_signed("!=", self.builder.extract_value(cond_val, 1),
+                                           ir.Constant(ir.IntType(64), 0))
+            then_bb = self.builder.append_basic_block("if_then")
+            else_bb = self.builder.append_basic_block("if_else")
+            end_bb = self.builder.append_basic_block("if_end")
+            self.builder.cbranch(cmp, then_bb, else_bb)
+            # then
+            self.builder.position_at_end(then_bb)
+            for st in node.then:
+                self.codegen_stmt(st)
+            self.builder.branch(end_bb)
+            # else
+            self.builder.position_at_end(else_bb)
+            for st in node.other:
+                self.codegen_stmt(st)
+            self.builder.branch(end_bb)
+            self.builder.position_at_end(end_bb)
+        else:
+            raise NotImplementedError(f"Stmt codegen not implemented for {type(node).__name__}")
+
