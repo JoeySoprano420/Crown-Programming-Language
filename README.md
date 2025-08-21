@@ -860,5 +860,10 @@ When your Python compiler emits LLVM IR for a .crown program, also declare these
 Compile and link:
 clang -O3 crown_runtime.c program.ll -o program.exe
 This way, arrays, maps, and match are real machine-level runtime objects.
+
+Example Cross-Compiled Flow
+crownc build hello.crown -o hello.exe --target=win64
+
+
 ---
 
