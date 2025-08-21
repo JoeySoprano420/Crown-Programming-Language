@@ -312,3 +312,82 @@ void crown_debug_print(CrownValue v) {
     }
 }
 
+// ============================================================
+// Crown Runtime: Recursive JSON Printers
+// ============================================================
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdbool.h>
+
+// Forward declarations for recursion
+void crown_json_print_value(void *val, const char *type);
+
+void crown_json_print_array(struct crown_array *arr) {
+    printf("[");
+    for (size_t i = 0; i < arr->len; i++) {
+        crown_json_print_value(arr->items[i], arr->types[i]);
+        if (i + 1 < arr->len) printf(",");
+    }
+    printf("]");
+}
+
+void crown_json_print_map(struct crown_map *map) {
+    printf("{");
+    for (size_t i = 0; i < map->len; i++) {
+        printf("\"%s\":", map->keys[i]);
+        crown_json_print_value(map->values[i], map->types[i]);
+        if (i + 1 < map->len) printf(",");
+    }
+    printf("}");
+}
+
+static void crown_json_escape_and_print(const char *s) {
+    printf("\"");
+    for (const char *p = s; *p; p++) {
+        switch (*p) {
+            case '\"': printf("\\\""); break;
+            case '\\': printf("\\\\"); break;
+            case '\n': printf("\\n"); break;
+            case '\r': printf("\\r"); break;
+            case '\t': printf("\\t"); break;
+            default: putchar(*p);
+        }
+    }
+    printf("\"");
+}
+
+void crown_json_print_value(void *val, const char *type) {
+    if (!val || !type) {
+        printf("null");
+        return;
+    }
+    if (strcmp(type, "i64") == 0) {
+        printf("%lld", *(long long*)val);
+    } else if (strcmp(type, "double") == 0) {
+        printf("%g", *(double*)val);
+    } else if (strcmp(type, "string") == 0) {
+        crown_json_escape_and_print((const char*)val);
+    } else if (strcmp(type, "array") == 0) {
+        crown_json_print_array((struct crown_array*)val);
+    } else if (strcmp(type, "map") == 0) {
+        crown_json_print_map((struct crown_map*)val);
+    } else {
+        printf("\"<unknown>\"");
+    }
+}
+
+struct crown_array {
+    size_t len;
+    void **items;
+    const char **types; // type tag per item
+};
+
+struct crown_map {
+    size_t len;
+    char **keys;
+    void **values;
+    const char **types; // type tag per value
+};
+
