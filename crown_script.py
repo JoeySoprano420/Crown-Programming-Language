@@ -973,7 +973,7 @@ if ir and binding:
             tokens = tokenize(src)
             return Parser(tokens).parse()
 
-# ---------- OPTIMIZATION PIPELINE ----------
+        # ---------- OPTIMIZATION PIPELINE ----------
 class CrownOptimizer:
     def __init__(self, ast):
         self.ast = ast
@@ -1114,4 +1114,594 @@ class CrownCompilerExtreme(CrownCompilerFull):
         exe = super().aot_build(outfile)
         # Compression stub: upx-like step could go here
         return exe
+
+    # ================================================================
+# Crown Script Supreme LLVM Codegen + Compiler CLI
+# ================================================================
+try:
+    from llvmlite import ir, binding
+    LLVM_AVAILABLE = True
+except ImportError:
+    LLVM_AVAILABLE = False
+
+# --------- LLVM CODEGEN ---------
+class CrownLLVMCodegen:
+    def __init__(self):
+        self.module = ir.Module(name="crown_module")
+        self.funcs = {}
+        self.builder = None
+        self.printf = None
+        self.declare_runtime()
+
+    def declare_runtime(self):
+        # Declare printf
+        voidptr_ty = ir.IntType(8).as_pointer()
+        self.printf_ty = ir.FunctionType(ir.IntType(32), [voidptr_ty], var_arg=True)
+        self.printf = ir.Function(self.module, self.printf_ty, name="printf")
+
+    def codegen(self, ast: Program):
+        for stmt in ast.stmts:
+            self.codegen_stmt(stmt)
+        return str(self.module)
+
+    def codegen_stmt(self, stmt):
+        if isinstance(stmt, Say):
+            fmt = "%d\n\0"
+            c_fmt = ir.Constant(ir.ArrayType(ir.IntType(8), len(fmt)),
+                                bytearray(fmt.encode("utf8")))
+            global_fmt = ir.GlobalVariable(self.module, c_fmt.type, name="fstr")
+            global_fmt.linkage = 'internal'
+            global_fmt.global_constant = True
+            global_fmt.initializer = c_fmt
+            fmt_ptr = self.builder.bitcast(global_fmt, ir.IntType(8).as_pointer())
+            val = self.codegen_expr(stmt.expr)
+            self.builder.call(self.printf, [fmt_ptr, val])
+        elif isinstance(stmt, Make):
+            val = self.codegen_expr(stmt.expr)
+            gv = ir.GlobalVariable(self.module, val.type, name=stmt.name)
+            gv.initializer = val
+            self.funcs[stmt.name] = gv
+        elif isinstance(stmt, FuncDef):
+            fn_ty = ir.FunctionType(ir.IntType(64), [ir.IntType(64)] * len(stmt.params))
+            fn = ir.Function(self.module, fn_ty, name=stmt.name)
+            self.funcs[stmt.name] = fn
+            block = fn.append_basic_block(name="entry")
+            self.builder = ir.IRBuilder(block)
+            for st in stmt.body:
+                self.codegen_stmt(st)
+            if not self.builder.block.is_terminated:
+                self.builder.ret(ir.Constant(ir.IntType(64), 0))
+        elif isinstance(stmt, Return):
+            val = self.codegen_expr(stmt.expr)
+            self.builder.ret(val)
+        elif isinstance(stmt, If):
+            cond_val = self.codegen_expr(stmt.cond)
+            zero = ir.Constant(ir.IntType(1), 0)
+            cond_bool = self.builder.icmp_signed('!=', cond_val, zero, "ifcond")
+            then_bb = self.builder.append_basic_block("then")
+            else_bb = self.builder.append_basic_block("else")
+            merge_bb = self.builder.append_basic_block("ifcont")
+            self.builder.cbranch(cond_bool, then_bb, else_bb)
+
+            self.builder.position_at_start(then_bb)
+            for st in stmt.then:
+                self.codegen_stmt(st)
+            if not self.builder.block.is_terminated:
+                self.builder.branch(merge_bb)
+
+            self.builder.position_at_start(else_bb)
+            for st in stmt.other:
+                self.codegen_stmt(st)
+            if not self.builder.block.is_terminated:
+                self.builder.branch(merge_bb)
+
+            self.builder.position_at_start(merge_bb)
+
+        elif isinstance(stmt, Loop):
+            start = self.codegen_expr(stmt.start)
+            end = self.codegen_expr(stmt.end)
+            step = self.codegen_expr(stmt.step)
+            preheader = self.builder.block
+            loop_bb = self.builder.append_basic_block("loop")
+            after_bb = self.builder.append_basic_block("afterloop")
+
+            self.builder.branch(loop_bb)
+            self.builder.position_at_start(loop_bb)
+            phi = self.builder.phi(ir.IntType(64), "i")
+            phi.add_incoming(start, preheader)
+
+            for st in stmt.body:
+                self.codegen_stmt(st)
+
+            nextval = self.builder.add(phi, step, "nextval")
+            cmp = self.builder.icmp_signed("<=", nextval, end, "loopcond")
+            self.builder.cbranch(cmp, loop_bb, after_bb)
+            phi.add_incoming(nextval, self.builder.block)
+
+            self.builder.position_at_start(after_bb)
+
+    def codegen_expr(self, expr):
+        if isinstance(expr, Literal):
+            if isinstance(expr.value, bool):
+                return ir.Constant(ir.IntType(1), int(expr.value))
+            if isinstance(expr.value, int):
+                return ir.Constant(ir.IntType(64), expr.value)
+        elif isinstance(expr, BinOp):
+            l = self.codegen_expr(expr.l)
+            r = self.codegen_expr(expr.r)
+            if expr.o == "+": return self.builder.add(l, r, "addtmp")
+            if expr.o == "-": return self.builder.sub(l, r, "subtmp")
+            if expr.o == "*": return self.builder.mul(l, r, "multmp")
+            if expr.o == "/": return self.builder.sdiv(l, r, "divtmp")
+        return ir.Constant(ir.IntType(64), 0)
+
+
+# --------- OPTIMIZER SUPREME ---------
+class SupremeOptimizer:
+    def __init__(self, llvm_ir: str):
+        self.llvm_ir = llvm_ir
+
+    def optimize(self, level=3):
+        if not LLVM_AVAILABLE: return self.llvm_ir
+        binding.initialize()
+        binding.initialize_native_target()
+        binding.initialize_native_asmprinter()
+        llvm_mod = binding.parse_assembly(self.llvm_ir)
+        llvm_mod.verify()
+        pmb = binding.PassManagerBuilder()
+        pmb.opt_level = level
+        pm = binding.ModulePassManager()
+        pmb.populate(pm)
+        pm.run(llvm_mod)
+        return str(llvm_mod)
+
+
+# --------- COMPILER CLI ---------
+def crownc_cli():
+    import argparse, os
+    p = argparse.ArgumentParser(prog="crownc", description="Crown Script Compiler Supreme")
+    p.add_argument("file", help="Source .crown file")
+    p.add_argument("-o", "--output", help="Output binary/exe")
+    p.add_argument("--jit", action="store_true", help="Run with JIT instead of AOT")
+    p.add_argument("-O", type=int, default=2, help="Optimization level (0–3)")
+    args = p.parse_args()
+
+    with open(args.file, encoding="utf-8") as f:
+        src = f.read()
+    tokens = tokenize(src)
+    ast = Parser(tokens).parse()
+
+    if not LLVM_AVAILABLE:
+        print("[warning] llvmlite not available, running in VM interpreter mode")
+        VM(ast).run()
+        return
+
+    # LLVM codegen
+    codegen = CrownLLVMCodegen()
+    ir_code = codegen.codegen(ast)
+
+    # Optimize
+    opt = SupremeOptimizer(ir_code)
+    optimized_ir = opt.optimize(args.O)
+
+    if args.jit:
+        print("[JIT] Running Crown Script with LLVM JIT...")
+        engine = create_execution_engine()
+        mod = binding.parse_assembly(optimized_ir)
+        mod.verify()
+        engine.add_module(mod)
+        engine.finalize_object()
+        engine.run_static_constructors()
+        main_fn = engine.get_function_address("main")
+        if main_fn:
+            import ctypes
+            ctypes.CFUNCTYPE(ctypes.c_int)(main_fn)()
+    else:
+        if not args.output: args.output = "a.out"
+        with open(args.output + ".ll", "w") as f:
+            f.write(optimized_ir)
+        print(f"[AOT] LLVM IR written to {args.output}.ll")
+        # In a full toolchain: call clang or llc to lower to native
+        # subprocess.run(["clang", f"{args.output}.ll", "-o", args.output])
+        print(f"[AOT] (stub) Binary ready at {args.output}")
+
+def create_execution_engine():
+    target = binding.Target.from_default_triple()
+    target_machine = target.create_target_machine()
+    backing_mod = binding.parse_assembly("")
+    engine = binding.create_mcjit_compiler(backing_mod, target_machine)
+    return engine
+
+
+# Wire CLI if called directly
+if __name__ == "__main__":
+    if len(sys.argv) > 1 and sys.argv[0].endswith("crownc"):
+        crownc_cli()
+
+# ================================================================
+# Crown Script Ultimate LLVM + Optimizer + CLI
+# ================================================================
+try:
+    from llvmlite import ir, binding
+    LLVM_AVAILABLE = True
+except ImportError:
+    LLVM_AVAILABLE = False
+
+# --------- Runtime Helper Declarations ---------
+class CrownRuntimeHelpers:
+    @staticmethod
+    def declare(module):
+        i64 = ir.IntType(64)
+        i1 = ir.IntType(1)
+        voidptr = ir.IntType(8).as_pointer()
+
+        # malloc
+        malloc_ty = ir.FunctionType(voidptr, [i64])
+        malloc_fn = ir.Function(module, malloc_ty, name="malloc")
+
+        # free
+        free_ty = ir.FunctionType(ir.VoidType(), [voidptr])
+        free_fn = ir.Function(module, free_ty, name="free")
+
+        # printf
+        printf_ty = ir.FunctionType(ir.IntType(32), [voidptr], var_arg=True)
+        printf_fn = ir.Function(module, printf_ty, name="printf")
+
+        return {
+            "malloc": malloc_fn,
+            "free": free_fn,
+            "printf": printf_fn
+        }
+
+# --------- LLVM CODEGEN ---------
+class CrownLLVMCodegen:
+    def __init__(self):
+        self.module = ir.Module(name="crown_module")
+        self.builder = None
+        self.funcs = {}
+        self.runtime = CrownRuntimeHelpers.declare(self.module)
+
+    def codegen(self, ast: Program):
+        # declare main entry
+        fn_ty = ir.FunctionType(ir.IntType(64), [])
+        main_fn = ir.Function(self.module, fn_ty, name="main")
+        block = main_fn.append_basic_block("entry")
+        self.builder = ir.IRBuilder(block)
+        for stmt in ast.stmts:
+            self.codegen_stmt(stmt)
+        if not self.builder.block.is_terminated:
+            self.builder.ret(ir.Constant(ir.IntType(64), 0))
+        return str(self.module)
+
+    # --------- Statements ---------
+    def codegen_stmt(self, s):
+        if isinstance(s, Say):
+            val = self.codegen_expr(s.expr)
+            fmt = "%lld\n\0"
+            c_fmt = ir.Constant(ir.ArrayType(ir.IntType(8), len(fmt)),
+                                bytearray(fmt.encode("utf8")))
+            gfmt = ir.GlobalVariable(self.module, c_fmt.type, name="fmtstr")
+            gfmt.linkage = "internal"
+            gfmt.global_constant = True
+            gfmt.initializer = c_fmt
+            fmt_ptr = self.builder.bitcast(gfmt, ir.IntType(8).as_pointer())
+            self.builder.call(self.runtime["printf"], [fmt_ptr, val])
+
+        elif isinstance(s, If):
+            cond = self.codegen_expr(s.cond)
+            then_bb = self.builder.append_basic_block("then")
+            else_bb = self.builder.append_basic_block("else")
+            merge_bb = self.builder.append_basic_block("ifend")
+            self.builder.cbranch(cond, then_bb, else_bb)
+
+            self.builder.position_at_start(then_bb)
+            for st in s.then:
+                self.codegen_stmt(st)
+            if not self.builder.block.is_terminated:
+                self.builder.branch(merge_bb)
+
+            self.builder.position_at_start(else_bb)
+            for st in s.other:
+                self.codegen_stmt(st)
+            if not self.builder.block.is_terminated:
+                self.builder.branch(merge_bb)
+
+            self.builder.position_at_start(merge_bb)
+
+        elif isinstance(s, Loop):
+            start = self.codegen_expr(s.start)
+            end = self.codegen_expr(s.end)
+            step = self.codegen_expr(s.step)
+            preheader = self.builder.block
+            loop_bb = self.builder.append_basic_block("loop")
+            after_bb = self.builder.append_basic_block("afterloop")
+            self.builder.branch(loop_bb)
+
+            self.builder.position_at_start(loop_bb)
+            phi = self.builder.phi(ir.IntType(64), "i")
+            phi.add_incoming(start, preheader)
+            for st in s.body:
+                self.codegen_stmt(st)
+            nxt = self.builder.add(phi, step)
+            cmp = self.builder.icmp_signed("<=", nxt, end)
+            self.builder.cbranch(cmp, loop_bb, after_bb)
+            phi.add_incoming(nxt, self.builder.block)
+            self.builder.position_at_start(after_bb)
+
+        elif isinstance(s, Return):
+            val = self.codegen_expr(s.expr)
+            self.builder.ret(val)
+
+        elif isinstance(s, FuncDef):
+            fn_ty = ir.FunctionType(ir.IntType(64), [ir.IntType(64)]*len(s.params))
+            fn = ir.Function(self.module, fn_ty, name=s.name)
+            self.funcs[s.name] = fn
+            entry = fn.append_basic_block("entry")
+            old_builder = self.builder
+            self.builder = ir.IRBuilder(entry)
+            for st in s.body:
+                self.codegen_stmt(st)
+            if not self.builder.block.is_terminated:
+                self.builder.ret(ir.Constant(ir.IntType(64), 0))
+            self.builder = old_builder
+
+        elif isinstance(s, Call):
+            args = [self.codegen_expr(a) for a in s.args]
+            if s.name in self.funcs:
+                self.builder.call(self.funcs[s.name], args)
+
+        else:
+            # fallback to VM-only semantics
+            pass
+
+    # --------- Expressions ---------
+    def codegen_expr(self, e):
+        if isinstance(e, Literal):
+            if isinstance(e.value, int):
+                return ir.Constant(ir.IntType(64), e.value)
+            if isinstance(e.value, bool):
+                return ir.Constant(ir.IntType(1), int(e.value))
+        if isinstance(e, BinOp):
+            l = self.codegen_expr(e.l); r = self.codegen_expr(e.r)
+            if e.o == "+": return self.builder.add(l, r)
+            if e.o == "-": return self.builder.sub(l, r)
+            if e.o == "*": return self.builder.mul(l, r)
+            if e.o == "/": return self.builder.sdiv(l, r)
+            if e.o == "==": return self.builder.icmp_signed("==", l, r)
+            if e.o == "!=": return self.builder.icmp_signed("!=", l, r)
+            if e.o == "<": return self.builder.icmp_signed("<", l, r)
+            if e.o == ">": return self.builder.icmp_signed(">", l, r)
+            if e.o == "<=": return self.builder.icmp_signed("<=", l, r)
+            if e.o == ">=": return self.builder.icmp_signed(">=", l, r)
+        return ir.Constant(ir.IntType(64), 0)
+
+
+# --------- Optimizer ---------
+class CrownOptimizer:
+    def __init__(self, ir_code: str):
+        self.ir_code = ir_code
+
+    def optimize(self, level=3):
+        if not LLVM_AVAILABLE: return self.ir_code
+        binding.initialize()
+        binding.initialize_native_target()
+        binding.initialize_native_asmprinter()
+        llvm_mod = binding.parse_assembly(self.ir_code)
+        llvm_mod.verify()
+        pmb = binding.PassManagerBuilder()
+        pmb.opt_level = level
+        pmb.loop_vectorize = True
+        pmb.slp_vectorize = True
+        pm = binding.ModulePassManager()
+        pmb.populate(pm)
+        pm.run(llvm_mod)
+        return str(llvm_mod)
+
+
+# --------- Execution Engine ---------
+def create_execution_engine():
+    target = binding.Target.from_default_triple()
+    target_machine = target.create_target_machine()
+    backing_mod = binding.parse_assembly("")
+    engine = binding.create_mcjit_compiler(backing_mod, target_machine)
+    return engine
+
+
+# --------- Compiler CLI ---------
+def crownc_cli():
+    import argparse, os, subprocess
+    p = argparse.ArgumentParser(prog="crownc", description="Crown Script Supreme Compiler")
+    p.add_argument("file", help="Source .crown file")
+    p.add_argument("-o", "--output", help="Output binary")
+    p.add_argument("--jit", action="store_true", help="Run with JIT")
+    p.add_argument("-O", type=int, default=2, help="Optimization level")
+    args = p.parse_args()
+
+    with open(args.file, encoding="utf-8") as f: src = f.read()
+    tokens = tokenize(src)
+    ast = Parser(tokens).parse()
+
+    if not LLVM_AVAILABLE:
+        print("[warning] LLVM unavailable → falling back to VM")
+        VM(ast).run()
+        return
+
+    codegen = CrownLLVMCodegen()
+    ir_code = codegen.codegen(ast)
+    opt = CrownOptimizer(ir_code)
+    opt_ir = opt.optimize(args.O)
+
+    if args.jit:
+        engine = create_execution_engine()
+        mod = binding.parse_assembly(opt_ir)
+        engine.add_module(mod)
+        engine.finalize_object()
+        main_ptr = engine.get_function_address("main")
+        import ctypes
+        fnty = ctypes.CFUNCTYPE(ctypes.c_long)
+        fn = fnty(main_ptr)
+        fn()
+    else:
+        if not args.output: args.output = "a.out"
+        ir_file = args.output + ".ll"
+        with open(ir_file, "w") as f: f.write(opt_ir)
+        try:
+            subprocess.run(["clang", ir_file, "-o", args.output], check=True)
+            print(f"[AOT] Built {args.output}")
+        except Exception:
+            print(f"[AOT] IR saved to {ir_file}, external clang needed.")
+
+# Hook CLI
+if __name__ == "__main__":
+    if sys.argv[0].endswith("crownc"):
+        crownc_cli()
+
+        # ================================================================
+        # Crown Script Supreme LLVM Codegen + Compiler CLI
+        # ================================================================
+
+# ================================================================
+# Crown Script Runtime Helpers for Arrays, Maps, and Match
+# ================================================================
+
+class CrownRuntimeLowering:
+    def __init__(self, module: ir.Module):
+        self.module = module
+        self._declare_helpers()
+
+    def _declare_helpers(self):
+        i64 = ir.IntType(64)
+        voidptr = ir.IntType(8).as_pointer()
+
+        # Arrays
+        self.array_new = ir.Function(self.module,
+            ir.FunctionType(voidptr, [i64]), name="crown_array_new")
+        self.array_push = ir.Function(self.module,
+            ir.FunctionType(ir.VoidType(), [voidptr, i64]), name="crown_array_push")
+        self.array_get = ir.Function(self.module,
+            ir.FunctionType(i64, [voidptr, i64]), name="crown_array_get")
+        self.array_set = ir.Function(self.module,
+            ir.FunctionType(ir.VoidType(), [voidptr, i64, i64]), name="crown_array_set")
+        self.array_len = ir.Function(self.module,
+            ir.FunctionType(i64, [voidptr]), name="crown_array_len")
+
+        # Maps
+        self.map_new = ir.Function(self.module,
+            ir.FunctionType(voidptr, []), name="crown_map_new")
+        self.map_set = ir.Function(self.module,
+            ir.FunctionType(ir.VoidType(), [voidptr, i64, i64]), name="crown_map_set")
+        self.map_get = ir.Function(self.module,
+            ir.FunctionType(i64, [voidptr, i64]), name="crown_map_get")
+        self.map_has = ir.Function(self.module,
+            ir.FunctionType(i64, [voidptr, i64]), name="crown_map_has")
+        self.map_keys = ir.Function(self.module,
+            ir.FunctionType(voidptr, [voidptr]), name="crown_map_keys")
+
+        # Match dispatch (runtime tag matcher)
+        self.match_tag = ir.Function(self.module,
+            ir.FunctionType(i64, [i64]), name="crown_match_tag")
+
+
+# Extend LLVM Codegen
+class CrownLLVMCodegen(CrownLLVMCodegen):
+    def __init__(self):
+        super().__init__()
+        self.helpers = CrownRuntimeLowering(self.module)
+
+    def codegen_expr(self, e):
+        # Literals (unchanged)
+        if isinstance(e, Literal):
+            if isinstance(e.value, int):
+                return ir.Constant(ir.IntType(64), e.value)
+            if isinstance(e.value, bool):
+                return ir.Constant(ir.IntType(1), int(e.value))
+
+        # Array literal
+        if isinstance(e, ArrayLit):
+            arr = self.builder.call(self.helpers.array_new,
+                                    [ir.Constant(ir.IntType(64), len(e.items))])
+            for item in e.items:
+                val = self.codegen_expr(item)
+                self.builder.call(self.helpers.array_push, [arr, val])
+            return arr
+
+        # Map literal
+        if isinstance(e, MapLit):
+            m = self.builder.call(self.helpers.map_new, [])
+            for k, v in e.pairs:
+                key = self.codegen_expr(k)
+                val = self.codegen_expr(v)
+                self.builder.call(self.helpers.map_set, [m, key, val])
+            return m
+
+        # Indexing
+        if isinstance(e, Index):
+            base = self.codegen_expr(e.base)
+            idx = self.codegen_expr(e.idx)
+            if isinstance(e.base, ArrayLit) or isinstance(e.base, Var):
+                return self.builder.call(self.helpers.array_get, [base, idx])
+            else:
+                return self.builder.call(self.helpers.map_get, [base, idx])
+
+        # Binary operations (unchanged from above)
+        if isinstance(e, BinOp):
+            l = self.codegen_expr(e.l); r = self.codegen_expr(e.r)
+            if e.o == "+": return self.builder.add(l, r)
+            if e.o == "-": return self.builder.sub(l, r)
+            if e.o == "*": return self.builder.mul(l, r)
+            if e.o == "/": return self.builder.sdiv(l, r)
+            if e.o == "==": return self.builder.icmp_signed("==", l, r)
+            if e.o == "!=": return self.builder.icmp_signed("!=", l, r)
+            if e.o == "<": return self.builder.icmp_signed("<", l, r)
+            if e.o == ">": return self.builder.icmp_signed(">", l, r)
+            if e.o == "<=": return self.builder.icmp_signed("<=", l, r)
+            if e.o == ">=": return self.builder.icmp_signed(">=", l, r)
+        return ir.Constant(ir.IntType(64), 0)
+
+    def codegen_stmt(self, s):
+        # Lower foreach into runtime calls
+        if isinstance(s, Foreach):
+            arr = self.codegen_expr(s.iterable)
+            length = self.builder.call(self.helpers.array_len, [arr])
+            zero = ir.Constant(ir.IntType(64), 0)
+            idx_alloca = self.builder.alloca(ir.IntType(64))
+            self.builder.store(zero, idx_alloca)
+
+            loop_bb = self.builder.append_basic_block("foreach_loop")
+            after_bb = self.builder.append_basic_block("foreach_after")
+
+            self.builder.branch(loop_bb)
+            self.builder.position_at_start(loop_bb)
+
+            idx_val = self.builder.load(idx_alloca)
+            cmp = self.builder.icmp_signed("<", idx_val, length)
+            with self.builder.if_then(cmp):
+                elem = self.builder.call(self.helpers.array_get, [arr, idx_val])
+                for st in s.body:
+                    self.codegen_stmt(st)
+                nxt = self.builder.add(idx_val, ir.Constant(ir.IntType(64), 1))
+                self.builder.store(nxt, idx_alloca)
+                self.builder.branch(loop_bb)
+
+            self.builder.branch(after_bb)
+            self.builder.position_at_start(after_bb)
+
+        # Lower match into runtime tag dispatch
+        elif isinstance(s, Match):
+            val = self.codegen_expr(s.expr)
+            tag = self.builder.call(self.helpers.match_tag, [val])
+            done_bb = self.builder.append_basic_block("match_done")
+            for i, (pat, body) in enumerate(s.cases):
+                case_bb = self.builder.append_basic_block(f"case_{i}")
+                self.builder.cbranch(
+                    self.builder.icmp_signed("==", tag, ir.Constant(ir.IntType(64), i)),
+                    case_bb, done_bb
+                )
+                self.builder.position_at_start(case_bb)
+                for st in body:
+                    self.codegen_stmt(st)
+                self.builder.branch(done_bb)
+                self.builder.position_at_start(done_bb)
+        else:
+            super().codegen_stmt(s)
 
