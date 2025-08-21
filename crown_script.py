@@ -1988,3 +1988,994 @@ class CrownLLVMCodegen:
         else:
             raise NotImplementedError(f"Stmt codegen not implemented for {type(node).__name__}")
 
+# ============================================================
+# EXTENDED CODEGEN: Foreach, While, Loop Lowering
+# ============================================================
+
+def crown_codegen_runtime_iter_helpers(module: ir.Module):
+    """
+    Declare iteration helpers for arrays/maps so LLVM can lower Foreach.
+    """
+    i8ptr = ir.IntType(8).as_pointer()
+    crown_any = ir.LiteralStructType([ir.IntType(32), ir.IntType(64), i8ptr]).as_pointer()
+
+    # Iterator create
+    if "crown_iter_begin" not in module.globals:
+        ir.Function(module, ir.FunctionType(crown_any, [crown_any]), name="crown_iter_begin")
+    # Iterator has_next
+    if "crown_iter_has_next" not in module.globals:
+        ir.Function(module, ir.FunctionType(ir.IntType(1), [crown_any]), name="crown_iter_has_next")
+    # Iterator next
+    if "crown_iter_next" not in module.globals:
+        ir.Function(module, ir.FunctionType(crown_any, [crown_any]), name="crown_iter_next")
+
+
+class CrownLLVMCodegen(CrownLLVMCodegen):  # extend existing
+    def codegen_stmt(self, node):
+        # Reuse existing logic
+        try:
+            return super().codegen_stmt(node)
+        except NotImplementedError:
+            pass
+
+        # ---------- LOOP ----------
+        if isinstance(node, Loop):
+            # Classic for i = start; i <= end; i += step
+            start_val = self.codegen_expr(node.start)
+            end_val   = self.codegen_expr(node.end)
+            step_val  = self.codegen_expr(node.step)
+
+            # Allocate i
+            i_ptr = self.builder.alloca(ir.IntType(64))
+            self.builder.store(self.builder.extract_value(start_val, 1), i_ptr)
+
+            cond_bb = self.builder.append_basic_block("loop_cond")
+            body_bb = self.builder.append_basic_block("loop_body")
+            end_bb  = self.builder.append_basic_block("loop_end")
+
+            self.builder.branch(cond_bb)
+            self.builder.position_at_end(cond_bb)
+
+            i_val = self.builder.load(i_ptr)
+            cmp = self.builder.icmp_signed("<=", i_val, self.builder.extract_value(end_val, 1))
+            self.builder.cbranch(cmp, body_bb, end_bb)
+
+            self.builder.position_at_end(body_bb)
+            for st in node.body:
+                self.codegen_stmt(st)
+            i_next = self.builder.add(i_val, self.builder.extract_value(step_val, 1))
+            self.builder.store(i_next, i_ptr)
+            self.builder.branch(cond_bb)
+
+            self.builder.position_at_end(end_bb)
+            return None
+
+        # ---------- WHILE ----------
+        if isinstance(node, While):
+            cond_bb = self.builder.append_basic_block("while_cond")
+            body_bb = self.builder.append_basic_block("while_body")
+            end_bb  = self.builder.append_basic_block("while_end")
+
+            self.builder.branch(cond_bb)
+            self.builder.position_at_end(cond_bb)
+            cond_val = self.codegen_expr(node.cond)
+            cmp = self.builder.icmp_signed("!=", self.builder.extract_value(cond_val, 1),
+                                           ir.Constant(ir.IntType(64), 0))
+            self.builder.cbranch(cmp, body_bb, end_bb)
+
+            self.builder.position_at_end(body_bb)
+            for st in node.body:
+                self.codegen_stmt(st)
+            self.builder.branch(cond_bb)
+
+            self.builder.position_at_end(end_bb)
+            return None
+
+        # ---------- FOREACH ----------
+        if isinstance(node, Foreach):
+            crown_codegen_runtime_iter_helpers(self.module)
+
+            iter_begin = self.module.globals["crown_iter_begin"]
+            iter_has_next = self.module.globals["crown_iter_has_next"]
+            iter_next = self.module.globals["crown_iter_next"]
+
+            it_val = self.codegen_expr(node.iterable)
+            iter_ptr = self.builder.call(iter_begin, [it_val])
+
+            cond_bb = self.builder.append_basic_block("foreach_cond")
+            body_bb = self.builder.append_basic_block("foreach_body")
+            end_bb  = self.builder.append_basic_block("foreach_end")
+
+            self.builder.branch(cond_bb)
+            self.builder.position_at_end(cond_bb)
+            has_next = self.builder.call(iter_has_next, [iter_ptr])
+            self.builder.cbranch(has_next, body_bb, end_bb)
+
+            self.builder.position_at_end(body_bb)
+            next_val = self.builder.call(iter_next, [iter_ptr])
+            self.symtab[node.var] = next_val
+            for st in node.body:
+                self.codegen_stmt(st)
+            self.builder.branch(cond_bb)
+
+            self.builder.position_at_end(end_bb)
+            return None
+
+        raise NotImplementedError(f"Stmt codegen not implemented for {type(node).__name__}")
+
+# ============================================================
+# Crown Runtime Helpers (inline C implementation)
+# ============================================================
+
+CROWN_RUNTIME_C = r"""
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdio.h>
+
+// Crown "Any" type: tagged union
+typedef struct {
+    int32_t tag;    // 0=int, 1=double, 2=string, 3=array, 4=map
+    int64_t i64;    // integer or length
+    void*   ptr;    // pointer payload
+} crown_any;
+
+// ---------- Array ----------
+typedef struct {
+    size_t len;
+    size_t cap;
+    crown_any* data;
+} crown_array;
+
+crown_any crown_make_array(int64_t cap) {
+    crown_array* arr = (crown_array*)malloc(sizeof(crown_array));
+    arr->len = 0;
+    arr->cap = cap > 0 ? cap : 4;
+    arr->data = (crown_any*)calloc(arr->cap, sizeof(crown_any));
+    crown_any out = {3, (int64_t)arr->len, arr};
+    return out;
+}
+
+void crown_array_push(crown_any arr_any, crown_any val) {
+    crown_array* arr = (crown_array*)arr_any.ptr;
+    if (arr->len >= arr->cap) {
+        arr->cap *= 2;
+        arr->data = (crown_any*)realloc(arr->data, arr->cap * sizeof(crown_any));
+    }
+    arr->data[arr->len++] = val;
+    arr_any.i64 = arr->len;
+}
+
+crown_any crown_array_get(crown_any arr_any, int64_t idx) {
+    crown_array* arr = (crown_array*)arr_any.ptr;
+    if (idx < 0 || (size_t)idx >= arr->len) {
+        crown_any none = {0,0,NULL};
+        return none;
+    }
+    return arr->data[idx];
+}
+
+// ---------- Map (simple string→any hash map) ----------
+typedef struct crown_map_entry {
+    char* key;
+    crown_any value;
+    struct crown_map_entry* next;
+} crown_map_entry;
+
+typedef struct {
+    size_t bucket_count;
+    crown_map_entry** buckets;
+} crown_map;
+
+static size_t crown_hash(const char* s) {
+    size_t h=1469598103934665603ULL;
+    while (*s) { h ^= (unsigned char)*s++; h *= 1099511628211ULL; }
+    return h;
+}
+
+crown_any crown_make_map() {
+    crown_map* m = (crown_map*)malloc(sizeof(crown_map));
+    m->bucket_count = 64;
+    m->buckets = (crown_map_entry**)calloc(m->bucket_count,sizeof(crown_map_entry*));
+    crown_any out = {4,0,m};
+    return out;
+}
+
+void crown_map_set(crown_any map_any, const char* key, crown_any val) {
+    crown_map* m = (crown_map*)map_any.ptr;
+    size_t h = crown_hash(key) % m->bucket_count;
+    crown_map_entry* e = m->buckets[h];
+    while (e) {
+        if (strcmp(e->key,key)==0) { e->value = val; return; }
+        e = e->next;
+    }
+    e = (crown_map_entry*)malloc(sizeof(crown_map_entry));
+    e->key = strdup(key);
+    e->value = val;
+    e->next = m->buckets[h];
+    m->buckets[h] = e;
+}
+
+crown_any crown_map_get(crown_any map_any, const char* key) {
+    crown_map* m = (crown_map*)map_any.ptr;
+    size_t h = crown_hash(key) % m->bucket_count;
+    crown_map_entry* e = m->buckets[h];
+    while (e) {
+        if (strcmp(e->key,key)==0) return e->value;
+        e = e->next;
+    }
+    crown_any none = {0,0,NULL};
+    return none;
+}
+
+// ---------- Iterators ----------
+typedef struct {
+    int kind; // 0=array, 1=map
+    void* source;
+    size_t index;
+    crown_map_entry* cur;
+} crown_iter;
+
+crown_any crown_iter_begin(crown_any container) {
+    crown_iter* it = (crown_iter*)malloc(sizeof(crown_iter));
+    if (container.tag == 3) {
+        it->kind=0;
+        it->source=container.ptr;
+        it->index=0;
+        it->cur=NULL;
+    } else if (container.tag == 4) {
+        it->kind=1;
+        it->source=container.ptr;
+        it->index=0;
+        crown_map* m=(crown_map*)container.ptr;
+        it->cur=NULL;
+        for (size_t i=0;i<m->bucket_count;i++){
+            if (m->buckets[i]) { it->cur=m->buckets[i]; break; }
+        }
+    }
+    crown_any out = {9,0,it};
+    return out;
+}
+
+int crown_iter_has_next(crown_any iter_any) {
+    crown_iter* it = (crown_iter*)iter_any.ptr;
+    if (it->kind==0) {
+        crown_array* arr=(crown_array*)it->source;
+        return it->index < arr->len;
+    } else {
+        return it->cur!=NULL;
+    }
+}
+
+crown_any crown_iter_next(crown_any iter_any) {
+    crown_iter* it = (crown_iter*)iter_any.ptr;
+    if (it->kind==0) {
+        crown_array* arr=(crown_array*)it->source;
+        return arr->data[it->index++];
+    } else {
+        crown_map_entry* e=it->cur;
+        if (!e) { crown_any none={0,0,NULL}; return none; }
+        it->cur = e->next;
+        return e->value;
+    }
+}
+"""
+
+# Write helpers to a .c file when compiling
+def write_crown_runtime(path="crown_runtime.c"):
+    with open(path,"w",encoding="utf-8") as f:
+        f.write(CROWN_RUNTIME_C)
+
+# ============================================================
+# Build Integration: Auto-generate setup.py and CMake glue
+# ============================================================
+
+import os, subprocess
+
+SETUP_PY_TEMPLATE = r"""
+from setuptools import setup, Extension
+from setuptools.command.build_ext import build_ext
+import sys
+
+class BuildExt(build_ext):
+    def build_extensions(self):
+        for ext in self.extensions:
+            ext.extra_compile_args = ["-O3", "-march=native"]
+        build_ext.build_extensions(self)
+
+setup(
+    name="crown_runtime",
+    ext_modules=[
+        Extension("crown_runtime", sources=["crown_runtime.c"]),
+    ],
+    cmdclass={"build_ext": BuildExt}
+)
+"""
+
+CMAKELISTS_TEMPLATE = r"""
+cmake_minimum_required(VERSION 3.12)
+project(crown_runtime C)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_FLAGS_RELEASE "-O3 -march=native")
+
+add_library(crown_runtime STATIC crown_runtime.c)
+"""
+
+def write_build_glue():
+    """Emit setup.py and CMakeLists.txt so you can link runtime helpers easily."""
+    with open("setup.py", "w", encoding="utf-8") as f:
+        f.write(SETUP_PY_TEMPLATE.strip() + "\n")
+    with open("CMakeLists.txt", "w", encoding="utf-8") as f:
+        f.write(CMAKELISTS_TEMPLATE.strip() + "\n")
+    print("[crownc] Generated setup.py and CMakeLists.txt")
+
+# ============================================================
+# Crown Compiler Driver (extended)
+# ============================================================
+
+def crownc(argv):
+    """
+    crownc driver:
+    Usage:
+      crownc build file.crown -o file.exe
+      crownc jit file.crown
+    """
+    if len(argv) < 3:
+        print("Usage: crownc <build|jit|run> file.crown [-o out.exe]")
+        return 1
+
+    mode, srcfile = argv[1], argv[2]
+    out = "a.out"
+    if "-o" in argv:
+        out = argv[argv.index("-o")+1]
+
+    # Step 1: read and parse
+    with open(srcfile, encoding="utf-8") as f:
+        src = f.read()
+    tokens = tokenize(src)
+    ast = Parser(tokens).parse()
+
+    # Step 2: IR codegen
+    mod, engine = codegen_module(ast, name=out)
+
+    if mode == "jit":
+        print(f"[crownc] JIT running {srcfile}")
+        engine.run_function(engine.get_function_address("main"))
+        return 0
+
+    if mode == "build":
+        print(f"[crownc] AOT compiling {srcfile} -> {out}")
+        # Write LLVM IR
+        ir_path = out + ".ll"
+        with open(ir_path, "w", encoding="utf-8") as f:
+            f.write(str(mod))
+        print(f"[crownc] Wrote IR to {ir_path}")
+
+        # Emit runtime C
+        write_crown_runtime()
+
+        # Emit setup.py + CMake glue
+        write_build_glue()
+
+        # Try clang build if available
+        try:
+            subprocess.check_call([
+                "clang", "-O3", "-march=native",
+                ir_path, "crown_runtime.c", "-o", out
+            ])
+            print(f"[crownc] Built native binary: {out}")
+        except Exception as e:
+            print(f"[crownc] clang build failed: {e}")
+            print("[crownc] Use CMake or `python setup.py build_ext --inplace` to compile runtime.")
+        return 0
+
+    if mode == "run":
+        VM(ast).run()
+        return 0
+
+    print(f"[crownc] Unknown mode: {mode}")
+    return 1
+
+# Wire into __main__
+if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] in ("build","jit","run"):
+    sys.exit(crownc(sys.argv))
+
+# ============================================================
+# Universal Cross-Compiler Driver (Clang/GCC/MSVC autodetect)
+# ============================================================
+
+import platform, shutil
+
+def detect_compiler():
+    """Return (compiler_cmd, type) for the host system."""
+    system = platform.system().lower()
+    # Prefer clang if available
+    if shutil.which("clang"):
+        return "clang", "clang"
+    if shutil.which("gcc"):
+        return "gcc", "gcc"
+    if system == "windows":
+        # Try MSVC cl.exe
+        if shutil.which("cl"):
+            return "cl", "msvc"
+    return None, None
+
+def build_native(ir_path, out, runtime_c="crown_runtime.c"):
+    """Compile LLVM IR + runtime helpers into native binary."""
+    compiler, ctype = detect_compiler()
+    if not compiler:
+        print("[crownc] ERROR: No supported compiler (clang/gcc/msvc) found")
+        return False
+
+    system = platform.system().lower()
+    print(f"[crownc] Using {compiler} for {system} build")
+
+    try:
+        if ctype in ("clang","gcc"):
+            # Linux/Unix/macOS or mingw
+            cmd = [
+                compiler, "-O3", "-march=native",
+                ir_path, runtime_c, "-o", out
+            ]
+            if system == "darwin":
+                # macOS special flags
+                cmd += ["-framework", "CoreFoundation"]
+            subprocess.check_call(cmd)
+            print(f"[crownc] Built binary: {out}")
+            return True
+
+        elif ctype == "msvc":
+            # Convert IR to object file first (llc required)
+            llc = shutil.which("llc")
+            if not llc:
+                print("[crownc] ERROR: MSVC requires llc (LLVM static compiler) in PATH")
+                return False
+            obj = out + ".obj"
+            subprocess.check_call([llc, "-filetype=obj", ir_path, "-o", obj])
+            subprocess.check_call([
+                "cl", "/Fe:"+out, obj, runtime_c, "/O2", "/MT"
+            ])
+            print(f"[crownc] Built Windows .exe with MSVC: {out}")
+            return True
+    except Exception as e:
+        print(f"[crownc] Build failed: {e}")
+        return False
+
+    return False
+
+# ============================================================
+# Crown Compiler Driver (patched with cross-compile)
+# ============================================================
+
+def crownc(argv):
+    """
+    crownc driver:
+    Usage:
+      crownc run file.crown
+      crownc jit file.crown
+      crownc build file.crown -o file.exe
+    """
+    if len(argv) < 3:
+        print("Usage: crownc <run|jit|build> file.crown [-o out]")
+        return 1
+
+    mode, srcfile = argv[1], argv[2]
+    out = "a.out"
+    if "-o" in argv:
+        out = argv[argv.index("-o")+1]
+
+    with open(srcfile, encoding="utf-8") as f:
+        src = f.read()
+    tokens = tokenize(src)
+    ast = Parser(tokens).parse()
+
+    # LLVM IR
+    mod, engine = codegen_module(ast, name=out)
+
+    if mode == "run":
+        VM(ast).run()
+        return 0
+    if mode == "jit":
+        print(f"[crownc] JIT running {srcfile}")
+        engine.run_function(engine.get_function_address("main"))
+        return 0
+    if mode == "build":
+        ir_path = out + ".ll"
+        with open(ir_path, "w", encoding="utf-8") as f:
+            f.write(str(mod))
+        print(f"[crownc] Wrote LLVM IR to {ir_path}")
+
+        # Emit runtime
+        write_crown_runtime()
+        write_build_glue()
+
+        # Try native build
+        if not build_native(ir_path, out):
+            print("[crownc] ERROR: Native build failed, but IR + runtime emitted.")
+        return 0
+
+    print(f"[crownc] Unknown mode: {mode}")
+    return 1
+
+# ============================================================
+# Entry point
+# ============================================================
+
+if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] in ("build","jit","run"):
+    sys.exit(crownc(sys.argv))
+
+# ============================================================
+# Cross-Target Support (universal binaries from .crown source)
+# ============================================================
+
+def parse_target_flag(argv):
+    """Parse --target=<triple> from argv, returns (triple, sysroot)."""
+    triple = None
+    sysroot = None
+    for arg in argv:
+        if arg.startswith("--target="):
+            triple = arg.split("=",1)[1]
+        if arg.startswith("--sysroot="):
+            sysroot = arg.split("=",1)[1]
+    return triple, sysroot
+
+def build_cross(ir_path, out, triple, sysroot=None, runtime_c="crown_runtime.c"):
+    """Cross-compile LLVM IR + runtime helpers into target binary."""
+    compiler, ctype = detect_compiler()
+    if not compiler:
+        print("[crownc] ERROR: No compiler found for cross build")
+        return False
+
+    # Clang is preferred for cross-target (it speaks -target natively)
+    if ctype not in ("clang","gcc"):
+        print("[crownc] ERROR: Only clang/gcc support cross-target builds right now")
+        return False
+
+    cmd = [compiler, "-O3", "-march=native", ir_path, runtime_c, "-o", out]
+
+    if triple:
+        cmd = [compiler, f"--target={triple}", "-O3", ir_path, runtime_c, "-o", out]
+        if sysroot:
+            cmd += [f"--sysroot={sysroot}"]
+
+    try:
+        subprocess.check_call(cmd)
+        print(f"[crownc] Cross-built binary for {triple}: {out}")
+        return True
+    except Exception as e:
+        print(f"[crownc] Cross-build failed: {e}")
+        return False
+
+# ============================================================
+# Extended crownc driver with cross-target builds
+# ============================================================
+
+def crownc(argv):
+    """
+    crownc driver:
+    Usage:
+      crownc run file.crown
+      crownc jit file.crown
+      crownc build file.crown -o file.exe [--target=triple] [--sysroot=/path]
+    """
+    if len(argv) < 3:
+        print("Usage: crownc <run|jit|build> file.crown [-o out] [--target=triple] [--sysroot=/path]")
+        return 1
+
+    mode, srcfile = argv[1], argv[2]
+    out = "a.out"
+    if "-o" in argv:
+        out = argv[argv.index("-o")+1]
+
+    triple, sysroot = parse_target_flag(argv)
+
+    with open(srcfile, encoding="utf-8") as f:
+        src = f.read()
+    tokens = tokenize(src)
+    ast = Parser(tokens).parse()
+
+    # LLVM IR
+    mod, engine = codegen_module(ast, name=out)
+
+    if mode == "run":
+        VM(ast).run()
+        return 0
+    if mode == "jit":
+        print(f"[crownc] JIT running {srcfile}")
+        engine.run_function(engine.get_function_address("main"))
+        return 0
+    if mode == "build":
+        ir_path = out + ".ll"
+        with open(ir_path, "w", encoding="utf-8") as f:
+            f.write(str(mod))
+        print(f"[crownc] Wrote LLVM IR to {ir_path}")
+
+        # Emit runtime
+        write_crown_runtime()
+        write_build_glue()
+
+        if triple:
+            # Cross-target build
+            if not build_cross(ir_path, out, triple, sysroot):
+                print("[crownc] ERROR: Cross build failed.")
+        else:
+            # Host-native build
+            if not build_native(ir_path, out):
+                print("[crownc] ERROR: Native build failed, but IR + runtime emitted.")
+        return 0
+
+    print(f"[crownc] Unknown mode: {mode}")
+    return 1
+
+# ============================================================
+# Entry point (patched with cross-targeting)
+# ============================================================
+
+if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] in ("build","jit","run"):
+    sys.exit(crownc(sys.argv))
+
+# ============================================================
+# Crownc Extreme Cross-Compiler Driver (Sysroots, Emit, Universal)
+# ============================================================
+
+import urllib.request, tarfile, zipfile
+
+SYSROOT_URLS = {
+    "win64": "https://example.com/mingw-w64-sysroot.tar.gz",
+    "linux64": "https://example.com/linux-sysroot.tar.gz",
+    "macos": "https://example.com/macos-sysroot.tar.gz",
+    "android": "https://example.com/android-ndk-sysroot.tar.gz"
+}
+
+SYSROOT_CACHE = os.path.join(os.path.dirname(__file__), "sysroots")
+
+def ensure_sysroot(triple):
+    """Auto-download and extract sysroot if missing."""
+    if not os.path.exists(SYSROOT_CACHE):
+        os.makedirs(SYSROOT_CACHE)
+    sysroot_dir = os.path.join(SYSROOT_CACHE, triple)
+    if os.path.exists(sysroot_dir):
+        return sysroot_dir
+    url = SYSROOT_URLS.get(triple)
+    if not url:
+        print(f"[crownc] No sysroot URL known for {triple}")
+        return None
+    archive = os.path.join(SYSROOT_CACHE, f"{triple}.tar.gz")
+    print(f"[crownc] Downloading sysroot for {triple}...")
+    urllib.request.urlretrieve(url, archive)
+    print(f"[crownc] Extracting sysroot for {triple}...")
+    with tarfile.open(archive, "r:gz") as tf:
+        tf.extractall(sysroot_dir)
+    return sysroot_dir
+
+def build_cross(ir_path, out, triple, sysroot=None, runtime_c="crown_runtime.c", emit="bin"):
+    """Cross-compile LLVM IR + runtime helpers into target binary/object/asm."""
+    compiler, ctype = detect_compiler()
+    if not compiler:
+        print("[crownc] ERROR: No compiler found for cross build")
+        return False
+    if ctype not in ("clang","gcc"):
+        print("[crownc] ERROR: Only clang/gcc support cross-target builds")
+        return False
+
+    cmd = [compiler, f"--target={triple}", "-O3", ir_path, runtime_c]
+    if sysroot:
+        cmd += [f"--sysroot={sysroot}"]
+
+    if emit == "asm":
+        cmd += ["-S", "-o", out + ".s"]
+    elif emit == "obj":
+        cmd += ["-c", "-o", out + ".o"]
+    else:
+        cmd += ["-o", out]
+
+    try:
+        subprocess.check_call(cmd)
+        print(f"[crownc] Cross-built ({emit}) for {triple}: {out}")
+        return True
+    except Exception as e:
+        print(f"[crownc] Cross-build failed: {e}")
+        return False
+
+# ============================================================
+# Enhanced crownc driver with emit/universal/link-only
+# ============================================================
+
+def crownc(argv):
+    """
+    crownc driver:
+      crownc run file.crown
+      crownc jit file.crown
+      crownc build file.crown -o file.exe [--target=triple] [--sysroot=/path]
+        [--emit-asm] [--emit-obj] [--link-only] [--universal targets]
+    """
+    if len(argv) < 3:
+        print("Usage: crownc <run|jit|build> file.crown [-o out] [flags]")
+        return 1
+
+    mode, srcfile = argv[1], argv[2]
+    out = "a.out"
+    if "-o" in argv:
+        out = argv[argv.index("-o")+1]
+
+    triple, sysroot = parse_target_flag(argv)
+    emit = "bin"
+    if "--emit-asm" in argv: emit = "asm"
+    if "--emit-obj" in argv: emit = "obj"
+    link_only = "--link-only" in argv
+
+    universal_targets = []
+    if "--universal" in argv:
+        idx = argv.index("--universal")
+        if idx+1 < len(argv):
+            universal_targets = argv[idx+1].split(",")
+
+    if mode in ("run","jit") and link_only:
+        print("[crownc] ERROR: --link-only makes no sense for run/jit")
+        return 1
+
+    # Parse source unless link-only
+    ast = None
+    mod = None
+    if not link_only:
+        with open(srcfile, encoding="utf-8") as f:
+            src = f.read()
+        tokens = tokenize(src)
+        ast = Parser(tokens).parse()
+        mod, engine = codegen_module(ast, name=out)
+
+    if mode == "run":
+        VM(ast).run()
+        return 0
+    if mode == "jit":
+        print(f"[crownc] JIT running {srcfile}")
+        engine.run_function(engine.get_function_address("main"))
+        return 0
+    if mode == "build":
+        ir_path = out + ".ll"
+        if not link_only:
+            with open(ir_path, "w", encoding="utf-8") as f:
+                f.write(str(mod))
+            print(f"[crownc] Wrote LLVM IR to {ir_path}")
+            write_crown_runtime()
+            write_build_glue()
+
+        if universal_targets:
+            for tgt in universal_targets:
+                sysroot_auto = ensure_sysroot(tgt)
+                tgt_out = out + f"-{tgt}"
+                build_cross(ir_path, tgt_out, tgt, sysroot_auto, emit=emit)
+            return 0
+
+        if triple:
+            sysroot_auto = sysroot or ensure_sysroot(triple)
+            build_cross(ir_path, out, triple, sysroot_auto, emit=emit)
+        else:
+            if not build_native(ir_path, out):
+                print("[crownc] ERROR: Native build failed, but IR emitted.")
+        return 0
+
+    print(f"[crownc] Unknown mode: {mode}")
+    return 1
+
+# ============================================================
+# Entry point
+# ============================================================
+
+if __name__ == "__main__" and len(sys.argv) > 1 and sys.argv[1] in ("build","jit","run"):
+    sys.exit(crownc(sys.argv))
+
+# ============================================================
+# Pure C Runtime Helpers for Standalone Crown Binaries
+# ============================================================
+
+CROWN_RUNTIME_C = r"""
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+
+// ------------------ Array ------------------
+typedef struct {
+    size_t len;
+    size_t cap;
+    int64_t *data;
+} crown_array;
+
+crown_array* crown_array_new() {
+    crown_array* arr = (crown_array*)malloc(sizeof(crown_array));
+    arr->len = 0;
+    arr->cap = 4;
+    arr->data = (int64_t*)malloc(arr->cap * sizeof(int64_t));
+    return arr;
+}
+
+void crown_array_push(crown_array* arr, int64_t val) {
+    if (arr->len >= arr->cap) {
+        arr->cap *= 2;
+        arr->data = (int64_t*)realloc(arr->data, arr->cap * sizeof(int64_t));
+    }
+    arr->data[arr->len++] = val;
+}
+
+int64_t crown_array_get(crown_array* arr, size_t idx) {
+    if (idx >= arr->len) return 0;
+    return arr->data[idx];
+}
+
+void crown_array_set(crown_array* arr, size_t idx, int64_t val) {
+    if (idx < arr->len) arr->data[idx] = val;
+}
+
+// ------------------ Map ------------------
+typedef struct crown_map_entry {
+    char* key;
+    int64_t val;
+    struct crown_map_entry* next;
+} crown_map_entry;
+
+typedef struct {
+    crown_map_entry** buckets;
+    size_t bucket_count;
+} crown_map;
+
+unsigned long crown_hash(const char* s) {
+    unsigned long h = 5381;
+    while (*s) h = ((h << 5) + h) + (unsigned char)(*s++);
+    return h;
+}
+
+crown_map* crown_map_new() {
+    crown_map* m = (crown_map*)malloc(sizeof(crown_map));
+    m->bucket_count = 64;
+    m->buckets = (crown_map_entry**)calloc(m->bucket_count, sizeof(crown_map_entry*));
+    return m;
+}
+
+void crown_map_set(crown_map* m, const char* key, int64_t val) {
+    unsigned long h = crown_hash(key) % m->bucket_count;
+    crown_map_entry* e = m->buckets[h];
+    while (e) {
+        if (strcmp(e->key, key) == 0) {
+            e->val = val;
+            return;
+        }
+        e = e->next;
+    }
+    e = (crown_map_entry*)malloc(sizeof(crown_map_entry));
+    e->key = strdup(key);
+    e->val = val;
+    e->next = m->buckets[h];
+    m->buckets[h] = e;
+}
+
+int64_t crown_map_get(crown_map* m, const char* key) {
+    unsigned long h = crown_hash(key) % m->bucket_count;
+    crown_map_entry* e = m->buckets[h];
+    while (e) {
+        if (strcmp(e->key, key) == 0) return e->val;
+        e = e->next;
+    }
+    return 0;
+}
+
+// ------------------ Iterators ------------------
+typedef struct {
+    crown_array* arr;
+    size_t idx;
+} crown_iter_array;
+
+crown_iter_array* crown_iter_array_new(crown_array* arr) {
+    crown_iter_array* it = (crown_iter_array*)malloc(sizeof(crown_iter_array));
+    it->arr = arr;
+    it->idx = 0;
+    return it;
+}
+
+int crown_iter_array_next(crown_iter_array* it, int64_t* out) {
+    if (it->idx >= it->arr->len) return 0;
+    *out = it->arr->data[it->idx++];
+    return 1;
+}
+
+// ------------------ Basic JSON printing ------------------
+void crown_json_print_array(crown_array* arr) {
+    printf("[");
+    for (size_t i=0;i<arr->len;i++) {
+        printf("%lld", (long long)arr->data[i]);
+        if (i+1<arr->len) printf(",");
+    }
+    printf("]");
+}
+
+void crown_json_print_map(crown_map* m) {
+    printf("{");
+    int first = 1;
+    for (size_t b=0;b<m->bucket_count;b++) {
+        crown_map_entry* e = m->buckets[b];
+        while (e) {
+            if (!first) printf(",");
+            printf("\"%s\":%lld", e->key, (long long)e->val);
+            first = 0;
+            e = e->next;
+        }
+    }
+    printf("}");
+}
+"""
+
+def write_crown_runtime():
+    """Emit pure C runtime to crown_runtime.c (linked into every build)."""
+    with open("crown_runtime.c","w",encoding="utf-8") as f:
+        f.write(CROWN_RUNTIME_C)
+
+# ============================================================
+# Extend LLVM Codegen: lower `say` for arrays/maps to C runtime
+# ============================================================
+
+def llvm_codegen_stmt_extended(self, builder, func, stmt):
+    """Extended lowering for Say (arrays/maps → JSON print)."""
+    from llvmlite import ir
+    if isinstance(stmt, Say):
+        val = self.codegen_expr(builder, stmt.expr)
+        ty = val.type
+
+        # If it's an i64, just print as number
+        if ty == ir.IntType(64):
+            printf = self.module.declare_intrinsic("printf", (), ())
+            fmt = self._get_or_insert_global_str("%lld\n")
+            builder.call(printf, [fmt, val])
+            return
+
+        # If it's pointer to crown_array → call crown_json_print_array
+        if isinstance(ty, ir.PointerType) and ty.pointee.name == "struct.crown_array":
+            fn = self.module.globals.get("crown_json_print_array")
+            if fn is None:
+                fnty = ir.FunctionType(ir.VoidType(), [ty])
+                fn = ir.Function(self.module, fnty, name="crown_json_print_array")
+            builder.call(fn, [val])
+            return
+
+        # If it's pointer to crown_map → call crown_json_print_map
+        if isinstance(ty, ir.PointerType) and ty.pointee.name == "struct.crown_map":
+            fn = self.module.globals.get("crown_json_print_map")
+            if fn is None:
+                fnty = ir.FunctionType(ir.VoidType(), [ty])
+                fn = ir.Function(self.module, fnty, name="crown_json_print_map")
+            builder.call(fn, [val])
+            return
+
+        # Fallback: treat as string pointer
+        if isinstance(ty, ir.PointerType) and ty.pointee == ir.IntType(8):
+            printf = self.module.declare_intrinsic("printf", (), ())
+            fmt = self._get_or_insert_global_str("%s\n")
+            builder.call(printf, [fmt, val])
+            return
+
+    # Fallback to normal stmt lowering
+    return self.llvm_codegen_stmt_original(builder, func, stmt)
+
+# Monkey-patch the extension into Codegen
+if not hasattr(Codegen, "llvm_codegen_stmt_original"):
+    Codegen.llvm_codegen_stmt_original = Codegen.codegen_stmt
+    Codegen.codegen_stmt = llvm_codegen_stmt_extended
+
+# Utility: string constants for printf
+def _get_or_insert_global_str(self, s: str):
+    from llvmlite import ir
+    if not hasattr(self, "_global_strs"):
+        self._global_strs = {}
+    if s in self._global_strs:
+        return self._global_strs[s]
+    str_type = ir.ArrayType(ir.IntType(8), len(s)+1)
+    gv = ir.GlobalVariable(self.module, str_type, name=f".str{len(self._global_strs)}")
+    gv.global_constant = True
+    gv.initializer = ir.Constant(str_type, bytearray(s.encode("utf8")+b"\0"))
+    gv.linkage = "internal"
+    ptr = gv.bitcast(ir.IntType(8).as_pointer())
+    self._global_strs[s] = ptr
+    return ptr
+
+Codegen._get_or_insert_global_str = _get_or_insert_global_str
+
