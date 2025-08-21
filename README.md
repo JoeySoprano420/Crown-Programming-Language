@@ -851,6 +851,14 @@ AOT	--aot	Very High	Medium
 
 ---
 
+🔧 How to integrate:
 
+Save this file as crown_runtime.c in your project.
+
+When your Python compiler emits LLVM IR for a .crown program, also declare these helpers (we already added crown_array_new, crown_map_new, etc. in the generator).
+
+Compile and link:
+clang -O3 crown_runtime.c program.ll -o program.exe
+This way, arrays, maps, and match are real machine-level runtime objects.
 ---
 
