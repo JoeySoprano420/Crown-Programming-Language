@@ -1705,3 +1705,173 @@ class CrownLLVMCodegen(CrownLLVMCodegen):
         else:
             super().codegen_stmt(s)
 
+# ============================================================
+# Crown Script Runtime C Helpers (strings + arrays + maps)
+# ============================================================
+CROWN_RUNTIME_C = r"""
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+
+typedef enum {
+    CROWN_VAL_INT,
+    CROWN_VAL_STR,
+    CROWN_VAL_ARR,
+    CROWN_VAL_MAP
+} CrownValKind;
+
+typedef struct CrownValue CrownValue;
+
+typedef struct {
+    CrownValue* data;
+    int64_t size;
+    int64_t capacity;
+} CrownArray;
+
+typedef struct {
+    char* key;
+    CrownValue value;
+} CrownMapEntry;
+
+typedef struct {
+    CrownMapEntry* entries;
+    int64_t size;
+    int64_t capacity;
+} CrownMap;
+
+struct CrownValue {
+    CrownValKind kind;
+    union {
+        int64_t i;
+        char* s;
+        CrownArray* arr;
+        CrownMap* map;
+    } as;
+};
+
+// ---- Constructors ----
+CrownValue crown_make_int(int64_t i){
+    CrownValue v; v.kind=CROWN_VAL_INT; v.as.i=i; return v;
+}
+CrownValue crown_make_str(const char* s){
+    CrownValue v; v.kind=CROWN_VAL_STR; v.as.s=strdup(s); return v;
+}
+CrownValue crown_make_array(){
+    CrownArray* arr=malloc(sizeof(CrownArray));
+    arr->size=0; arr->capacity=4;
+    arr->data=malloc(sizeof(CrownValue)*arr->capacity);
+    CrownValue v; v.kind=CROWN_VAL_ARR; v.as.arr=arr; return v;
+}
+CrownValue crown_make_map(){
+    CrownMap* m=malloc(sizeof(CrownMap));
+    m->size=0; m->capacity=4;
+    m->entries=malloc(sizeof(CrownMapEntry)*m->capacity);
+    CrownValue v; v.kind=CROWN_VAL_MAP; v.as.map=m; return v;
+}
+
+// ---- Array Ops ----
+void crown_array_push(CrownValue arrv, CrownValue val){
+    if(arrv.kind!=CROWN_VAL_ARR) return;
+    CrownArray* arr=arrv.as.arr;
+    if(arr->size>=arr->capacity){
+        arr->capacity*=2;
+        arr->data=realloc(arr->data,sizeof(CrownValue)*arr->capacity);
+    }
+    arr->data[arr->size++]=val;
+}
+CrownValue crown_array_get(CrownValue arrv,int64_t idx){
+    if(arrv.kind!=CROWN_VAL_ARR) return crown_make_int(0);
+    CrownArray* arr=arrv.as.arr;
+    if(idx<0||idx>=arr->size) return crown_make_int(0);
+    return arr->data[idx];
+}
+int64_t crown_array_len(CrownValue arrv){
+    return (arrv.kind==CROWN_VAL_ARR)? arrv.as.arr->size : 0;
+}
+
+// ---- Map Ops ----
+void crown_map_set(CrownValue mapv,const char* key,CrownValue val){
+    if(mapv.kind!=CROWN_VAL_MAP) return;
+    CrownMap* m=mapv.as.map;
+    for(int64_t i=0;i<m->size;i++){
+        if(strcmp(m->entries[i].key,key)==0){
+            m->entries[i].value=val; return;
+        }
+    }
+    if(m->size>=m->capacity){
+        m->capacity*=2;
+        m->entries=realloc(m->entries,sizeof(CrownMapEntry)*m->capacity);
+    }
+    m->entries[m->size].key=strdup(key);
+    m->entries[m->size].value=val;
+    m->size++;
+}
+CrownValue crown_map_get(CrownValue mapv,const char* key){
+    if(mapv.kind!=CROWN_VAL_MAP) return crown_make_int(0);
+    CrownMap* m=mapv.as.map;
+    for(int64_t i=0;i<m->size;i++){
+        if(strcmp(m->entries[i].key,key)==0) return m->entries[i].value;
+    }
+    return crown_make_int(0);
+}
+int64_t crown_map_has(CrownValue mapv,const char* key){
+    if(mapv.kind!=CROWN_VAL_MAP) return 0;
+    CrownMap* m=mapv.as.map;
+    for(int64_t i=0;i<m->size;i++){
+        if(strcmp(m->entries[i].key,key)==0) return 1;
+    }
+    return 0;
+}
+
+// ---- Debug Print ----
+void crown_debug_print(CrownValue v);
+void crown_debug_print_array(CrownArray* arr){
+    printf("[");
+    for(int64_t i=0;i<arr->size;i++){
+        crown_debug_print(arr->data[i]);
+        if(i+1<arr->size) printf(", ");
+    }
+    printf("]");
+}
+void crown_debug_print_map(CrownMap* m){
+    printf("{");
+    for(int64_t i=0;i<m->size;i++){
+        printf("\"%s\": ",m->entries[i].key);
+        crown_debug_print(m->entries[i].value);
+        if(i+1<m->size) printf(", ");
+    }
+    printf("}");
+}
+void crown_debug_print(CrownValue v){
+    switch(v.kind){
+        case CROWN_VAL_INT: printf("%lld",(long long)v.as.i); break;
+        case CROWN_VAL_STR: printf("\"%s\"",v.as.s); break;
+        case CROWN_VAL_ARR: crown_debug_print_array(v.as.arr); break;
+        case CROWN_VAL_MAP: crown_debug_print_map(v.as.map); break;
+    }
+}
+"""
+# ============================================================
+# LLVM IR Declarations for Runtime Helpers
+# ============================================================
+
+def crown_codegen_runtime_decls(module):
+    """Emit LLVM declarations for runtime helpers."""
+    int64 = ir.IntType(64)
+    i8p = ir.IntType(8).as_pointer()
+    val_ty = ir.LiteralStructType([ir.IntType(32), ir.IntType(64)])  # simplified CrownValue
+
+    # Example: declare CrownValue @crown_make_int(i64)
+    ir.Function(module, ir.FunctionType(val_ty, [int64]), name="crown_make_int")
+    ir.Function(module, ir.FunctionType(val_ty, [i8p]), name="crown_make_str")
+    ir.Function(module, ir.FunctionType(val_ty, []), name="crown_make_array")
+    ir.Function(module, ir.FunctionType(val_ty, []), name="crown_make_map")
+    ir.Function(module, ir.FunctionType(ir.VoidType(), [val_ty, val_ty]), name="crown_array_push")
+    ir.Function(module, ir.FunctionType(val_ty, [val_ty, int64]), name="crown_array_get")
+    ir.Function(module, ir.FunctionType(int64, [val_ty]), name="crown_array_len")
+    ir.Function(module, ir.FunctionType(ir.VoidType(), [val_ty, i8p, val_ty]), name="crown_map_set")
+    ir.Function(module, ir.FunctionType(val_ty, [val_ty, i8p]), name="crown_map_get")
+    ir.Function(module, ir.FunctionType(int64, [val_ty, i8p]), name="crown_map_has")
+    ir.Function(module, ir.FunctionType(ir.VoidType(), [val_ty]), name="crown_debug_print")
+
