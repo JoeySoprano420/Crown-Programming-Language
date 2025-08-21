@@ -1875,3 +1875,6 @@ def crown_codegen_runtime_decls(module):
     ir.Function(module, ir.FunctionType(int64, [val_ty, i8p]), name="crown_map_has")
     ir.Function(module, ir.FunctionType(ir.VoidType(), [val_ty]), name="crown_debug_print")
 
+with open("crown_runtime.c","w") as f:
+    f.write(CROWN_RUNTIME_C)
+
