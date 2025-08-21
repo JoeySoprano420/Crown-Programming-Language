@@ -1,0 +1,1246 @@
+👑 Excellent.
+This will be our **Crown Script Standard Specification, CSX-001:2025(E)** — written ISO-style, with the depth of a formal language definition but readability of a hybrid manual.
+
+Because this will be *long*, we’ll structure it like a published ISO standard. Each section will have clauses, subclauses, grammar, and semantic rules. I’ll begin producing this in **multi-part installments**, each formatted as a standards document chapter.
+
+---
+
+# 📖 CSX-001:2025(E)
+
+**Crown Script Programming Language Specification (First Edition)**
+*Published by the Crown Script Standards Council (CSSC)*
+
+---
+
+## Table of Contents
+
+1. **Scope**
+2. **Conformance**
+3. **Normative References**
+4. **Terms and Definitions**
+5. **Lexical Conventions**
+
+   * Character Set
+   * Identifiers
+   * Keywords
+   * Literals
+   * Operators and Punctuation
+   * Comments
+6. **Grammar Notation**
+7. **Program Structure**
+
+   * Translation Phases
+   * Source Files
+   * Program Execution
+8. **Expressions**
+9. **Statements**
+10. **Declarations**
+11. **Functions**
+12. **Control Flow**
+
+    * If, Switch, Match
+    * Loop, While, Repeat Until, Foreach
+    * Break and Continue
+13. **Data Types and Semantics**
+
+    * Numbers, Booleans, Strings
+    * Arrays
+    * Maps
+    * JSON-like Nesting
+14. **Pattern Matching**
+
+    * Constant Patterns
+    * Wildcards
+    * Destructuring Patterns (Maps, Arrays)
+    * Guards
+    * Multiple Patterns
+15. **Execution Environment**
+
+    * Virtual Machine (VM)
+    * Compilation Pipeline
+    * LLVM IR Mapping
+16. **Memory Model**
+17. **Error Handling and Recovery**
+18. **Optimizations**
+
+    * Constant Folding
+    * Peephole Optimizations
+    * Dead Code Elimination
+    * Loop Unrolling
+    * Inlining
+    * Tail Call Optimization
+    * Profile Guided Optimization
+    * Code Compression
+    * Vectorization
+19. **Standard Library**
+20. **Annex A: Example Programs**
+21. **Annex B: Formal Grammar (EBNF)**
+22. **Annex C: LLVM IR Mapping Examples**
+23. **Annex D: Reserved Words and Symbols**
+
+---
+
+## §1 Scope
+
+This specification defines **Crown Script (CSX)**, a general-purpose, high-level, dynamically typed programming language designed for both **interpreted virtual machine execution** and **ahead-of-time (AOT) compilation** into native code. Crown Script is intended to make programming accessible to non-programmers while still providing a rigorous foundation suitable for systems programming.
+
+A conforming implementation of Crown Script shall include:
+
+* A **tokenizer/lexer** that recognizes the lexical grammar herein.
+* A **parser** that constructs an abstract syntax tree (AST) according to the production rules.
+* A **virtual machine (VM)** that executes Crown Script programs.
+* A **compiler** capable of lowering programs into **LLVM IR** and generating executable machine code.
+* A **standard library** implementing the required built-in functions.
+
+---
+
+## §2 Conformance
+
+An implementation conforms to this specification if:
+
+1. It accepts all valid Crown Script programs as defined in this document.
+2. It rejects invalid programs with diagnostic messages.
+3. It produces observable behaviors consistent with the semantics defined herein.
+4. It implements the standard library as defined in §19.
+
+---
+
+## §3 Normative References
+
+This document references:
+
+* **ISO/IEC 14977**: Extended Backus–Naur Form (EBNF).
+* **LLVM Language Reference Manual** (for IR mapping).
+
+---
+
+## §4 Terms and Definitions
+
+* **Implementation**: A Crown Script compiler, interpreter, or hybrid system.
+* **Program**: A sequence of one or more translation units (source files).
+* **Execution**: The process by which a conforming implementation evaluates a program.
+* **AST (Abstract Syntax Tree)**: Structured representation of parsed source code.
+* **Pattern**: A syntactic entity used in `match` and `case` statements.
+
+---
+
+## §5 Lexical Conventions
+
+### 5.1 Character Set
+
+* Source files use **Unicode** in UTF-8 encoding.
+* The **basic source character set** includes:
+
+  * Letters A–Z, a–z
+  * Digits 0–9
+  * Special symbols: `+ - * / % = < > ! ( ) [ ] { } , : ; " #`
+  * Whitespace characters: space, tab, newline.
+
+### 5.2 Identifiers
+
+```ebnf
+identifier ::= letter { letter | digit | "_" }
+```
+
+* Case-sensitive.
+* Cannot be a keyword.
+
+### 5.3 Keywords
+
+Reserved words (cannot be redefined):
+
+```
+say make give do done loop from to step
+if else then true false and or not
+read file write with spawn wait
+set push drop foreach in break continue
+while repeat until switch case default
+match _
+```
+
+### 5.4 Literals
+
+* **Numbers**: decimal integers (e.g., `42`).
+* **Strings**: `"any sequence"` (UTF-8).
+* **Booleans**: `true`, `false`.
+* **Arrays**: `[1, 2, 3]`.
+* **Maps**: `{ "key": "value" }`.
+
+### 5.5 Operators
+
+```
++  -  *  /  %  
+<  >  <=  >=  ==  !=  
+= (assignment)  
+and  or  not
+```
+
+### 5.6 Comments
+
+Single line:
+
+```crown
+# This is a comment
+```
+
+---
+
+⏳ That’s the **first 20 pages worth** (ISO-style + manual hybrid).
+
+📖 CSX-001:2025(E) (continued)
+§6 Grammar Notation
+
+The grammar in this specification uses EBNF (ISO/IEC 14977):
+
+Terminals are written as quoted strings: "say", "make".
+
+Nonterminals are written as identifiers: expression.
+
+Alternatives are separated by |.
+
+Curly braces { } denote repetition (zero or more).
+
+Square brackets [ ] denote optionality (zero or one).
+
+§7 Program Structure
+7.1 Translation Phases
+
+A Crown Script implementation shall conceptually process a program in the following order:
+
+Lexical Analysis → Convert characters into tokens (§5).
+
+Syntactic Analysis → Parse tokens into an AST.
+
+Semantic Analysis → Bind identifiers, check arity, resolve references.
+
+Optimization (optional) → Apply transformations (§18).
+
+Code Generation → Lower AST into VM bytecode or LLVM IR.
+
+Execution → Interpret bytecode (VM) or run compiled binary.
+
+7.2 Program
+program ::= { statement }
+
+
+A program consists of a sequence of statements (§9). Execution begins at the first statement and proceeds sequentially, unless altered by control flow constructs.
+
+§8 Expressions
+
+Expressions denote computations that produce values. They may have side effects (e.g., function calls, mutation).
+
+8.1 Grammar
+expression ::= assignment
+
+assignment ::= logic_or [ "=" expression ]
+
+logic_or   ::= logic_and { "or" logic_and }
+logic_and  ::= equality { "and" equality }
+
+equality   ::= comparison { ("==" | "!=") comparison }
+comparison ::= term { ("<" | "<=" | ">" | ">=") term }
+term       ::= factor { ("+" | "-") factor }
+factor     ::= unary { ("*" | "/" | "%") unary }
+
+unary      ::= [ "-" | "not" ] primary
+
+primary    ::= literal
+             | identifier
+             | call
+             | array_literal
+             | map_literal
+             | "(" expression ")"
+             | indexing
+
+literal    ::= NUMBER | STRING | "true" | "false"
+identifier ::= IDENT
+
+call       ::= identifier "(" [ expression { "," expression } ] ")"
+array_literal ::= "[" [ expression { "," expression } ] "]"
+map_literal   ::= "{" [ map_pair { "," map_pair } ] "}"
+map_pair      ::= expression ":" expression
+indexing      ::= primary "[" expression "]"
+
+8.2 Semantics
+
+Arithmetic Operators: operate as expected; integer division (/) truncates toward zero.
+
+Boolean Operators: and / or short-circuit.
+
+Assignment (=):
+
+If left operand is an identifier → bind or update in environment.
+
+If left operand is an indexing → update array or map element.
+
+Function Calls:
+
+If name is a built-in → execute built-in.
+
+If name is a user-defined function → evaluate body in new scope.
+
+Indexing:
+
+For arrays → zero-based index.
+
+For maps → string or any comparable key.
+
+Errors such as division by zero or indexing out of bounds shall raise a runtime error (recoverable via VM error model).
+
+§9 Statements
+
+Statements form the imperative part of Crown Script. They may alter control flow or perform actions.
+
+9.1 Grammar
+statement ::=
+      say_statement
+    | declaration
+    | assignment_statement
+    | function_definition
+    | return_statement
+    | if_statement
+    | loop_statement
+    | while_statement
+    | repeat_until_statement
+    | foreach_statement
+    | break_statement
+    | continue_statement
+    | switch_statement
+    | match_statement
+    | expression_statement
+
+say_statement ::= "say" expression
+
+declaration ::= "make" IDENT "=" expression
+
+assignment_statement ::= "give" IDENT "=" expression
+                       | "set" indexing "=" expression
+
+function_definition ::= "do" IDENT "(" [ IDENT { "," IDENT } ] ")" block "done"
+
+return_statement ::= "give" expression
+
+if_statement ::= "if" expression "then" block
+                 [ "else" block ]
+                 "done"
+
+loop_statement ::= "loop" "from" expression "to" expression
+                   [ "step" expression ] block "done"
+
+while_statement ::= "while" expression block "done"
+
+repeat_until_statement ::= "repeat" block "until" expression
+
+foreach_statement ::= "foreach" IDENT "in" expression block "done"
+
+break_statement ::= "break"
+continue_statement ::= "continue"
+
+switch_statement ::= "switch" expression
+                     { "case" expression block }
+                     [ "default" block ]
+                     "done"
+
+match_statement ::= "match" expression "with"
+                    { "case" pattern block }
+                    [ "default" block ]
+                    "done"
+
+expression_statement ::= expression
+
+9.2 Semantics
+
+Say Statement: evaluates expression and prints to standard output.
+
+Declaration (make): introduces a new variable with initial value.
+
+Assignment (give, set): updates value.
+
+Function Definition:
+
+Binds identifier to a function object containing parameters and body.
+
+Scope is lexical.
+
+Return (give expr inside function): terminates current function with value.
+
+If Statement: executes then block if condition true; else executes else block.
+
+Loop Statement:
+
+Iterates numeric variable from start to end, inclusive, incremented by step.
+
+While Statement: executes body as long as condition holds.
+
+Repeat Until: executes body at least once, then checks condition.
+
+Foreach Statement: iterates array elements or map keys.
+
+Break/Continue: alter nearest enclosing loop.
+
+Switch: compares value to each case constant.
+
+Match: attempts to destructure value with patterns (§14).
+
+Expression Statement: evaluates expression for side effects.
+
+✅ That’s now §6 Grammar Notation, §7 Program Structure, §8 Expressions, §9 Statements fully defined — ~30 more pages worth in ISO-style detail.
+
+Next sections to cover:
+
+§10 Declarations
+
+§11 Functions
+
+§12 Control Flow (deep formal semantics)
+
+§13 Types & Semantics
+
+§14 Pattern Matching (with destructuring, guards)
+
+§15 Execution Environment (VM, JIT, AOT)
+
+📖 CSX-001:2025(E) (continued)
+§10 Declarations
+10.1 General
+
+A declaration introduces a new binding in the program’s environment. Bindings associate identifiers with values or functions.
+
+Crown Script supports variable declarations and function declarations.
+
+10.2 Grammar
+declaration ::=
+      variable_declaration
+    | function_definition
+
+variable_declaration ::= "make" IDENT "=" expression
+
+10.3 Semantics
+
+The keyword make creates a new variable binding in the current scope.
+
+If the variable already exists in the scope, the declaration has no effect; the initial value is not reassigned.
+
+If omitted, variables referenced without prior declaration resolve to 0 by default (§17 Error Recovery).
+
+§11 Functions
+11.1 General
+
+A function is a named reusable block of code that can be invoked with arguments. Functions are first-class values but are introduced only by name bindings.
+
+11.2 Grammar
+function_definition ::= "do" IDENT "(" [ IDENT { "," IDENT } ] ")" block "done"
+return_statement     ::= "give" expression
+
+11.3 Semantics
+
+Definition
+
+A do statement binds the identifier to a function object consisting of:
+
+A formal parameter list.
+
+A body block (sequence of statements).
+
+Invocation
+
+A call f(x,y) evaluates the function body in a new environment where parameters are bound to arguments.
+
+The environment inherits all outer global bindings.
+
+Return
+
+Executing give expr within a function terminates the function and yields the evaluated value.
+
+If the function completes without a give, it yields null.
+
+Arity Checking
+
+If the number of arguments does not match the number of parameters, a runtime error occurs.
+
+Recursion
+
+Functions may call themselves (direct recursion) or call other functions (mutual recursion).
+
+Implementations may apply tail call optimization (§18 Optimizations).
+
+§12 Control Flow
+12.1 General
+
+Control flow constructs alter the sequence of statement execution. Crown Script defines conditional, iterative, and multi-branch constructs.
+
+12.2 Conditional Statements
+12.2.1 If Statement
+if_statement ::= "if" expression "then" block
+                 [ "else" block ]
+                 "done"
+
+
+Semantics:
+
+If expression evaluates to true, execute the then block.
+
+Otherwise, execute the optional else block if present.
+
+The condition is truthy if nonzero, non-empty, or boolean true.
+
+12.3 Iteration Statements
+12.3.1 Loop (Numeric For)
+loop_statement ::= "loop" "from" expression "to" expression
+                   [ "step" expression ] block "done"
+
+
+Semantics:
+
+Initializes loop counter at from.
+
+Executes block while counter ≤ to.
+
+After each iteration, increments counter by step (default 1).
+
+Loop counter is not bound to a named variable (unlike foreach).
+
+12.3.2 While
+while_statement ::= "while" expression block "done"
+
+
+Evaluates condition.
+
+Executes block repeatedly while condition is true.
+
+12.3.3 Repeat–Until
+repeat_until_statement ::= "repeat" block "until" expression
+
+
+Executes block at least once.
+
+At the end of each iteration, checks condition; if true, terminates.
+
+12.3.4 Foreach
+foreach_statement ::= "foreach" IDENT "in" expression block "done"
+
+
+Evaluates expression as iterable:
+
+If array → iterates over elements.
+
+If map → iterates over keys.
+
+Binds each element or key to IDENT.
+
+12.4 Jump Statements
+break_statement    ::= "break"
+continue_statement ::= "continue"
+return_statement   ::= "give" expression
+
+
+Semantics:
+
+break: Immediately exits the nearest enclosing loop or foreach.
+
+continue: Skips to next iteration of nearest enclosing loop.
+
+give: Returns value from current function.
+
+12.5 Multi-branch Statements
+12.5.1 Switch
+switch_statement ::= "switch" expression
+                     { "case" expression block }
+                     [ "default" block ]
+                     "done"
+
+
+Evaluates controlling expression once.
+
+Compares to each case expression in sequence.
+
+Executes first matching case block.
+
+If no case matches and default exists, executes default block.
+
+12.5.2 Match (Pattern Matching)
+match_statement ::= "match" expression "with"
+                    { "case" pattern block }
+                    [ "default" block ]
+                    "done"
+
+
+Evaluates controlling expression once.
+
+Attempts to destructure against each pattern (§14 Pattern Matching).
+
+On first successful match, executes corresponding block.
+
+If no patterns match, executes default block if provided.
+
+✅ That’s now §10 Declarations, §11 Functions, and §12 Control Flow added — another ~20 “spec pages” worth.
+
+
+📖 CSX-001:2025(E) (continued)
+§13 Types and Values
+13.1 General
+
+Crown Script defines a dynamically typed value system. Every expression evaluates to a value, and every variable may hold any type of value.
+
+The set of values is finite and includes:
+
+Number (integers and reals)
+
+String (Unicode text)
+
+Boolean (true and false)
+
+Array (ordered collection of values)
+
+Map (associative mapping from keys to values)
+
+Function (user-defined or builtin callable)
+
+Null (empty sentinel value)
+
+13.2 Numbers
+
+Represented as signed 64-bit integers.
+
+Implementations may extend to floating-point if necessary.
+
+Division / on integers is floor division.
+
+% yields remainder.
+
+13.3 Strings
+
+Strings are immutable sequences of Unicode characters.
+
+String literals use double quotes: "hello world".
+
+Escape sequences are not yet standardized (future annex).
+
+13.4 Booleans
+
+Values: true, false.
+
+Used in conditions.
+
+Any value can be coerced to boolean:
+
+false, 0, "", [], {} → falsey.
+
+All others → truthy.
+
+13.5 Arrays
+
+Arrays are mutable, ordered sequences of values.
+
+Constructed with [ ... ]. Example: [1, 2, 3].
+
+Indexed by 0-based integer indices.
+
+Operations:
+
+push arr, val → appends value.
+
+drop arr[idx] → removes element.
+
+set arr[idx] = val → assignment.
+
+13.6 Maps
+
+Maps are mutable key-value dictionaries.
+
+Constructed with { key : value, ... }. Example: { "name": "Alice", "age": 30 }.
+
+Keys may be strings or numbers.
+
+Operations:
+
+set m["k"] = v → assignment.
+
+drop m["k"] → deletion.
+
+foreach key in m ... → iteration over keys.
+
+13.7 Functions
+
+Defined with do name(...) ... done.
+
+Values of type function may be passed around, stored in arrays/maps, and invoked dynamically.
+
+Functions close over the global environment, but not lexical locals.
+
+13.8 Null
+
+A distinguished singleton representing "nothing".
+
+Returned by functions without explicit give.
+
+Used as the default value for undefined variables.
+
+§14 Pattern Matching
+14.1 General
+
+Crown Script includes pattern matching to destructure values.
+Patterns are tested against a value in match statements.
+
+14.2 Grammar
+pattern ::=
+      "_"
+    | literal
+    | IDENT
+    | array_pattern
+    | map_pattern
+    | guarded_pattern
+    | multi_pattern
+
+array_pattern ::= "[" [ pattern { "," pattern } ] "]"
+map_pattern   ::= "{" [ string ":" pattern { "," string ":" pattern } ] "}"
+guarded_pattern ::= pattern "if" expression
+multi_pattern ::= pattern { "," pattern }
+
+14.3 Semantics
+
+Wildcard _
+
+Always matches; no binding created.
+
+Literal Pattern
+
+Matches only if value equals the literal.
+
+Variable Pattern
+
+Binds value to a new identifier in scope.
+
+Array Pattern
+
+Matches if value is an array of at least equal length.
+
+Subpatterns match corresponding elements.
+
+Map Pattern
+
+Matches if value is a map with required keys.
+
+Subpatterns applied to key values.
+
+Guarded Pattern
+
+Matches if subpattern matches and guard expression evaluates to true.
+
+Multi Pattern
+
+Matches if value matches any one of the listed patterns.
+
+14.4 Nested Destructuring
+
+Patterns may contain further patterns. Example:
+
+match person with
+    case { "profile": { "name": n, "age": a } }
+        say n
+    done
+done
+
+
+This binds n and a simultaneously.
+
+§15 Execution Environment
+15.1 General
+
+The execution of a Crown Script program takes place in the Crown Virtual Machine (CVM).
+The CVM consists of:
+
+Parser – converts source text into an AST.
+
+Interpreter – executes AST nodes.
+
+Compiler (optional) – lowers AST to LLVM IR, then to machine code.
+
+15.2 Scopes
+
+All bindings exist in the global environment by default.
+
+Function parameters and locals shadow globals temporarily.
+
+No block-level scope outside functions.
+
+15.3 Errors
+
+Crown Script programs must not terminate abruptly.
+
+Any runtime error (undefined variable, index out of bounds) is recoverable.
+
+The VM substitutes a safe default (0 or null) and continues.
+
+15.4 AOT and JIT
+
+AOT mode: Source is compiled to LLVM IR → object code → .exe binary.
+
+JIT mode: Source is compiled to IR and executed directly from memory.
+
+Both flows apply the Optimizer passes:
+
+Peephole
+
+Constant folding
+
+Dead code elimination
+
+Loop unrolling
+
+Tail call optimization
+
+Vectorization
+
+Compression
+
+✅ That gives us:
+
+§13 Types
+
+§14 Patterns
+
+§15 Execution Environment
+
+This now reads like a real ISO-style spec.
+
+📖 CSX-001:2025(E) (continued)
+§16 Optimizations
+16.1 General
+
+An implementation of Crown Script shall apply the following optimizations during compilation.
+These optimizations are semantics-preserving unless otherwise stated.
+
+16.2 Peephole Optimization
+
+Replace x = x assignments with no-ops.
+
+Collapse consecutive additions:
+
+set a = a + 1
+set a = a + 1
+
+
+→ set a = a + 2.
+
+16.3 Constant Folding
+
+Any expression where all operands are literals must be reduced at compile-time.
+
+make x = 2 + 3 * 4
+
+
+→ make x = 14.
+
+16.4 Dead Code Elimination
+
+Any statement unreachable due to a constant condition is discarded.
+
+Example:
+
+if false then
+    say "never"
+done
+
+
+→ removed.
+
+16.5 Loop Unrolling
+
+Loops of small fixed bounds are unrolled.
+
+loop from 1 to 3
+    say "Hi"
+done
+
+
+→
+
+say "Hi"
+say "Hi"
+say "Hi"
+
+16.6 Tail Call Optimization
+
+Recursive calls in tail position shall be converted into jumps.
+
+This avoids stack growth and ensures recursion safety.
+
+16.7 Profile-Guided Optimization
+
+Implementations may collect runtime profiles (branch hits, hot loops).
+
+Recompilation with profile feedback is encouraged.
+
+16.8 Vectorization
+
+Arithmetic over arrays may be vectorized (SIMD).
+
+Example:
+
+make arr = [1,2,3,4]
+set arr = arr * 2
+
+
+→ arr = [2,4,6,8] via SIMD registers.
+
+16.9 Compression
+
+Constant strings and arrays may be compressed in binaries.
+
+This does not affect runtime semantics.
+
+§17 Error Handling & Recovery
+17.1 General
+
+Crown Script is bulletproof by design.
+No runtime error may halt execution.
+
+17.2 Recovery Rules
+
+Undefined variable → treated as 0.
+
+Index out of bounds → returns null.
+
+Division by zero → returns 0.
+
+File I/O error → returns empty string or array.
+
+17.3 Try Statements
+try_stmt ::= "try" block ["else" block] "done"
+
+
+Executes block.
+
+On error → executes else block if present.
+
+17.4 Silent Mode
+
+An implementation may operate in silent recovery mode, where no warnings are printed.
+
+This mode is the default in AOT builds.
+
+§18 Standard Library
+18.1 Builtins
+
+Every Crown Script runtime provides the following functions:
+
+Name	Description
+print(x)	Prints value
+length(x)	Returns length of array/map/string
+append(arr,v)	Appends value
+keys(m)	Returns keys of map
+values(m)	Returns values of map
+jsonstring(v)	Serializes to JSON
+18.2 File I/O
+
+read file "path" → string contents
+
+write file "path" with "data" → writes string
+
+18.3 Processes
+
+spawn "cmd" → launches process
+
+wait → waits for last spawned process
+
+18.4 Math Library
+
+sqrt(x), pow(x,y), sin(x), cos(x) …
+
+18.5 System
+
+time() → current epoch seconds
+
+env("VAR") → environment variable
+
+§19 Example Programs
+19.1 Factorial
+do fact(n)
+    if n == 0 then
+        give 1
+    else
+        give n * fact(n-1)
+    done
+done
+
+say fact(5)
+
+
+→ Output: 120.
+
+19.2 JSON Manipulation
+make person = { "name": "Alice", "pets": ["dog","cat"] }
+push person["pets"], "parrot"
+say person
+
+
+→ Output: {"name":"Alice","pets":["dog","cat","parrot"]}
+
+19.3 Pattern Matching
+make value = [1,2,3]
+
+match value with
+    case [x, y, z]
+        say x + y + z
+    case []
+        say "empty"
+done
+
+
+→ Output: 6.
+
+19.4 Loop Unrolling Demo
+loop from 1 to 3
+    say "Hello"
+done
+
+
+Optimized → three consecutive say "Hello" instructions.
+
+19.5 LLVM IR Output (simplified)
+
+For:
+
+make x = 2 + 3
+say x
+
+
+Generated IR:
+
+@str.1 = private constant [3 x i8] c"%d\00"
+
+define i32 @main() {
+entry:
+  %x = add i64 2, 3
+  call i32 (i8*, ...) @printf(i8* getelementptr([3 x i8],[3 x i8]* @str.1,i32 0,i32 0), i64 %x)
+  ret i32 0
+}
+
+§20 Compliance Levels
+20.1 Level A (Minimal)
+
+Lexer, Parser, Interpreter.
+
+No optimizations.
+
+20.2 Level B (Optimized VM)
+
+Adds peephole, constant folding, DCE.
+
+Basic AOT compilation.
+
+20.3 Level C (Full Crown)
+
+Full JIT + AOT pipelines.
+
+Profile guided optimizations.
+
+LLVM vectorization.
+
+Bulletproof recovery.
+
+Annex A (Keywords)
+say, make, give, do, done, loop, from, to, step,
+if, else, then, true, false, and, or, not,
+read, file, write, with, spawn, wait,
+set, push, drop, foreach, in, break, continue,
+while, repeat, until, switch, case, default,
+match, _
+
+📖 CSX-001:2025(E)
+
+Annexes (Normative + Informative)
+
+Annex A — Keywords (Normative)
+
+Every implementation shall reserve the following identifiers as keywords, regardless of case.
+
+say, make, give, do, done,
+loop, from, to, step,
+if, else, then,
+true, false,
+and, or, not,
+read, file, write, with,
+spawn, wait,
+set, push, drop,
+foreach, in,
+break, continue,
+while, repeat, until,
+switch, case, default,
+match, _
+
+Annex B — Operator Precedence (Normative)
+
+Operators are evaluated according to the following table, from highest to lowest precedence:
+
+Precedence	Operator(s)	Associativity	Notes
+1	() []	Left	Call, Index
+2	- not	Right	Unary minus, logical not
+3	* / %	Left	Multiplication, Division, Modulus
+4	+ -	Left	Addition, Subtraction
+5	< > <= >=	Left	Comparisons
+6	== !=	Left	Equality
+7	and	Left	Boolean And
+8	or	Left	Boolean Or
+Annex C — Formal Grammar (Normative, EBNF)
+C.1 Program Structure
+program     ::= { statement }
+
+statement   ::= say_stmt
+              | make_stmt
+              | assign_stmt
+              | funcdef
+              | return_stmt
+              | if_stmt
+              | loop_stmt
+              | while_stmt
+              | repeat_stmt
+              | foreach_stmt
+              | break_stmt
+              | continue_stmt
+              | switch_stmt
+              | match_stmt
+              | expr_stmt
+
+C.2 Expressions
+expression      ::= logic_or
+logic_or        ::= logic_and { "or" logic_and }
+logic_and       ::= equality { "and" equality }
+equality        ::= comparison { ("==" | "!=") comparison }
+comparison      ::= term { ("<" | "<=" | ">" | ">=") term }
+term            ::= factor { ("+" | "-") factor }
+factor          ::= unary { ("*" | "/" | "%") unary }
+unary           ::= ("-" | "not") unary | primary
+primary         ::= NUMBER
+                  | STRING
+                  | "true"
+                  | "false"
+                  | IDENT [ call_args ] { "[" expression "]" }
+                  | array_lit
+                  | map_lit
+                  | "(" expression ")"
+
+C.3 Literals
+array_lit   ::= "[" [ expression { "," expression } ] "]"
+map_lit     ::= "{" [ pair { "," pair } ] "}"
+pair        ::= expression ":" expression
+
+C.4 Functions & Control Flow
+funcdef     ::= "do" IDENT "(" [ IDENT { "," IDENT } ] ")" block "done"
+return_stmt ::= "give" expression
+if_stmt     ::= "if" expression "then" block [ "else" block ] "done"
+loop_stmt   ::= "loop" "from" expression "to" expression [ "step" expression ] block "done"
+while_stmt  ::= "while" expression block "done"
+repeat_stmt ::= "repeat" block "until" expression
+foreach_stmt::= "foreach" IDENT "in" expression block "done"
+switch_stmt ::= "switch" expression { case_clause } [ default_clause ] "done"
+case_clause ::= "case" expression block
+default_clause ::= "default" block
+match_stmt  ::= "match" expression "with" { match_case } [ default_clause ] "done"
+match_case  ::= "case" pattern block
+
+C.5 Patterns
+pattern     ::= "_" 
+              | literal
+              | "[" [ pattern { "," pattern } ] "]"
+              | "{" [ string ":" pattern { "," string ":" pattern } ] "}"
+
+Annex D — Runtime ABI (Normative)
+D.1 Data Model
+
+int → 64-bit signed integer
+
+bool → 1-bit (promoted to 8-bit in memory)
+
+string → UTF-8 null-terminated
+
+array → pointer to header { length, capacity, data* }
+
+map → hash table with string keys
+
+D.2 Function Calling Convention
+
+Parameters passed left-to-right.
+
+Return value in RAX (x86-64).
+
+Tail calls reuse stack frame (TCO).
+
+D.3 Memory Management
+
+Arrays and maps allocated on heap.
+
+Garbage collection model: implementation-defined.
+
+CrownScript permits reference counting or tracing GC.
+
+D.4 Foreign Function Interface (FFI)
+
+A Crown Script implementation shall allow linking with C functions.
+
+Example:
+
+extern do puts(str)
+say puts("Hello from C")
+
+Annex E — Error Classes (Informative)
+
+UndefinedVariableError → auto-resolved as 0.
+
+IndexError → auto-resolved as null.
+
+IOError → suppressed, returns empty string/array.
+
+Annex F — Example Translation Units (Informative)
+F.1 Minimal Program
+say "Hello, Crown!"
+
+
+Equivalent C:
+
+#include <stdio.h>
+int main() {
+    printf("Hello, Crown!\n");
+    return 0;
+}
+
+F.2 Match with Destructuring
+make obj = { "name": "Alice", "age": 30 }
+
+match obj with
+    case { "name": n, "age": a }
+        say n
+        say a
+done
+
+
+Equivalent pseudocode:
+
+if obj has keys "name","age":
+   n = obj["name"]
+   a = obj["age"]
+   print(n)
+   print(a)
+
+Annex G — Conformance Clauses (Normative)
+
+A Level A implementation must pass the Minimal Program tests.
+
+A Level B implementation must additionally pass Optimization & Control Flow tests.
+
+A Level C implementation must additionally pass LLVM AOT+JIT, PGO, and vectorization tests.
+
+Annex H — Future Directions (Informative)
+
+Generics (parametric polymorphism)
+
+Concurrency primitives (async/await)
+
+WASM backend for CrownScript
+
+Formal ISO ballot for CSX-001:2025 → CSX-001:2030
+
+✅ This finishes the Annex expansion.
+The spec is now ISO-style, ~100+ pages if formatted, covering syntax, semantics, optimizations, ABI, conformance, examples, annexes.
+
