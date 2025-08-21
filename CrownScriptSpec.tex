@@ -1,0 +1,355 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage{titlesec}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{longtable}
+\usepackage{geometry}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{amsmath}
+\usepackage{amssymb}
+
+\geometry{margin=1in}
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{ISO/CSX 001:2025(E)}
+\lhead{Crown Script Specification}
+\rfoot{\thepage}
+
+\titleformat{\section}{\normalfont\Large\bfseries}{\thesection}{1em}{}
+\titleformat{\subsection}{\normalfont\large\bfseries}{\thesubsection}{1em}{}
+\titleformat{\subsubsection}{\normalfont\normalsize\bfseries}{\thesubsubsection}{1em}{}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  tabsize=2,
+  showstringspaces=false
+}
+
+\begin{document}
+
+\begin{center}
+{\Huge ISO/CSX 001:2025(E)}\\[1ex]
+{\huge Crown Script --- Programming Language Specification}\\[4ex]
+\textbf{Draft International Standard}\\
+Edition 1.0, 2025
+\end{center}
+
+\vspace{4ex}
+\hrule
+\vspace{2ex}
+\tableofcontents
+\vspace{2ex}
+\hrule
+\newpage
+
+% ---------------- FOREWORD ----------------
+\section*{Foreword}
+Crown Script is specified in this International Standard as a general-purpose and systems programming language designed to make advanced programming accessible to non-programmers while providing compilation, optimization, and execution models competitive with established system languages.
+
+This International Standard specifies the syntax, semantics, library, and execution model of Crown Script, along with requirements for conforming implementations.
+
+\newpage
+
+% ---------------- 1 SCOPE ----------------
+\section{Scope}
+This International Standard specifies the Crown Script language, including:
+\begin{itemize}
+\item lexical elements,
+\item grammar,
+\item static and dynamic semantics,
+\item runtime model,
+\item optimization requirements,
+\item abstract machine definition,
+\item Ahead-of-time (AOT) and Just-in-time (JIT) compilation requirements,
+\item foreign function interface.
+\end{itemize}
+
+% ---------------- 2 REFERENCES ----------------
+\section{Normative References}
+\begin{itemize}
+\item ISO/IEC 9899 --- Programming Language C
+\item ISO/IEC 14882 --- Programming Language C++
+\item ECMA-262 --- ECMAScript Language Specification
+\item ISO/IEC 23360 --- POSIX
+\end{itemize}
+
+% ---------------- 3 TERMS ----------------
+\section{Terms, Definitions, and Conventions}
+\begin{itemize}
+\item \textbf{shall}: requirement
+\item \textbf{should}: recommendation
+\item \textbf{may}: permission
+\item \textbf{implementation-defined}: dependent on implementation, must be documented
+\item \textbf{undefined behavior}: behavior for which this Standard imposes no requirements
+\end{itemize}
+
+% ---------------- 4 LEXICAL STRUCTURE ----------------
+\section{Lexical Structure}
+
+\subsection{Character Set}
+Crown Script source is encoded in UTF-8. Identifiers and string literals may include any Unicode scalar values.
+
+\subsection{Tokens}
+Tokens are formed from:
+\begin{itemize}
+\item identifiers
+\item keywords
+\item literals (numeric, string, boolean)
+\item operators
+\item separators
+\end{itemize}
+
+Whitespace and comments are ignored except as separators.
+
+% ---------------- 5 GRAMMAR ----------------
+\section{Grammar (EBNF)}
+
+\subsection{Program}
+\begin{lstlisting}
+program         ::= { statement }
+\end{lstlisting}
+
+\subsection{Statements}
+\begin{lstlisting}
+statement       ::= say_stmt
+                  | make_stmt
+                  | assign_stmt
+                  | funcdef
+                  | return_stmt
+                  | if_stmt
+                  | loop_stmt
+                  | while_stmt
+                  | repeat_stmt
+                  | foreach_stmt
+                  | break_stmt
+                  | continue_stmt
+                  | switch_stmt
+                  | match_stmt
+                  | expr_stmt
+\end{lstlisting}
+
+\subsection{Expressions}
+\begin{lstlisting}
+expression      ::= logic_or
+logic_or        ::= logic_and { "or" logic_and }
+logic_and       ::= equality { "and" equality }
+equality        ::= comparison { ("==" | "!=") comparison }
+comparison      ::= term { ("<" | "<=" | ">" | ">=") term }
+term            ::= factor { ("+" | "-") factor }
+factor          ::= unary { ("*" | "/" | "%") unary }
+unary           ::= ("-" | "not") unary | primary
+primary         ::= NUMBER
+                  | STRING
+                  | "true" | "false"
+                  | IDENT [ call_args ] { "[" expression "]" }
+                  | array_lit | map_lit
+                  | "(" expression ")"
+\end{lstlisting}
+
+\subsection{Function Definitions}
+\begin{lstlisting}
+funcdef         ::= "do" IDENT "(" [ param_list ] ")" block "done"
+param_list      ::= IDENT { "," IDENT }
+return_stmt     ::= "give" expression
+\end{lstlisting}
+
+\subsection{Control Flow}
+\begin{lstlisting}
+if_stmt         ::= "if" expression "then" block [ "else" block ] "done"
+loop_stmt       ::= "loop" "from" expression "to" expression [ "step" expression ] block "done"
+while_stmt      ::= "while" expression block "done"
+repeat_stmt     ::= "repeat" block "until" expression
+foreach_stmt    ::= "foreach" IDENT "in" expression block "done"
+switch_stmt     ::= "switch" expression { case_clause } [ default_clause ] "done"
+case_clause     ::= "case" expression block
+default_clause  ::= "default" block
+match_stmt      ::= "match" expression "with" { match_case } [ default_clause ] "done"
+match_case      ::= "case" pattern block
+\end{lstlisting}
+
+% ---------------- 6 DECLARATIONS ----------------
+\section{Declarations and Definitions}
+Variables are introduced using \texttt{make} and bound in global or local scope. Reassignment uses \texttt{give} or \texttt{set}.
+
+% ---------------- 7 STATEMENTS ----------------
+\section{Statements}
+Each statement corresponds to an AST node (Say, Make, Assign, If, Loop, etc.).
+
+% ---------------- 8 EXPRESSIONS ----------------
+\section{Expressions}
+Binary and unary expressions are defined in §5.3. Operators obey precedence rules given in Annex B.
+
+% ---------------- 9 FUNCTIONS ----------------
+\section{Functions}
+Functions are declared with \texttt{do} … \texttt{done}. They may return values using \texttt{give}. Tail calls must be optimized.
+
+% ---------------- 10 CONTROL FLOW ----------------
+\section{Control Flow}
+Control constructs are semantically defined as in §5.5. Break and continue control loop execution. Repeat–until executes at least once.
+
+% ---------------- 11 TYPES ----------------
+\section{Types and Values}
+\begin{itemize}
+\item Number (64-bit signed int)
+\item String (UTF-8)
+\item Boolean (true/false)
+\item Array (ordered collection)
+\item Map (unordered key/value, string keys)
+\item Function
+\end{itemize}
+
+% ---------------- 12 PATTERN MATCHING ----------------
+\section{Pattern Matching}
+Patterns include constants, wildcards, arrays, maps, and nested destructuring. Guards (\texttt{if expr}) may be attached.
+
+% ---------------- 13 LIBRARY ----------------
+\section{Standard Library}
+Minimal built-ins:
+\begin{itemize}
+\item \texttt{print}, \texttt{length}, \texttt{append}, \texttt{keys}, \texttt{values}, \texttt{jsonstring}
+\end{itemize}
+
+I/O:
+\begin{itemize}
+\item \texttt{read file "name"}, \texttt{write file "name" with expr}
+\end{itemize}
+
+System:
+\begin{itemize}
+\item \texttt{spawn}, \texttt{wait}
+\end{itemize}
+
+% ---------------- 14 EXECUTION ----------------
+\section{Execution Environment}
+
+\subsection{Abstract Machine}
+Defines stack, heap, call frames, exception handling.
+
+\subsection{Compilation}
+Implementations shall support:
+\begin{itemize}
+\item Ahead-of-time (AOT) to native binaries
+\item Just-in-time (JIT) execution
+\end{itemize}
+
+Optimizations (see §15) are mandatory at -O2 and higher.
+
+% ---------------- 15 OPTIMIZATION ----------------
+\section{Compiler and Optimizer Requirements}
+
+\subsection{Peephole}
+Eliminate redundant loads/stores.
+
+\subsection{Tail Call}
+Eliminate stack growth in tail calls.
+
+\subsection{Loop Unrolling}
+Unroll small fixed-count loops.
+
+\subsection{Constant Folding}
+Evaluate constants at compile time.
+
+\subsection{Profile-Guided}
+Use runtime profile for branch reordering.
+
+\subsection{Code Compression}
+Reduce IR/binary size without semantic change.
+
+\subsection{Vectorization}
+Exploit SIMD units for array operations.
+
+\subsection{Dead Code Elimination}
+Remove unreachable code.
+
+% ---------------- 16 CONFORMANCE ----------------
+\section{Conformance}
+
+\subsection{Levels}
+\begin{itemize}
+\item Level A: interpreter compliance
+\item Level B: AOT + baseline optimization
+\item Level C: full optimization suite, JIT backend
+\end{itemize}
+
+% ---------------- ANNEXES ----------------
+\appendix
+
+\section{Annex A (Normative) --- Keywords}
+\begin{longtable}{|l|}
+\hline
+say, make, give, do, done, loop, from, to, step, if, else, then, true, false, and, or, not, \\
+read, file, write, with, spawn, wait, set, push, drop, foreach, in, break, continue, \\
+while, repeat, until, switch, case, default, match, \_ \\
+\hline
+\end{longtable}
+
+\section{Annex B (Normative) --- Operator Precedence}
+\begin{longtable}{|c|c|}
+\hline
+Precedence & Operators \\
+\hline
+1 & \texttt{* / \%} \\
+2 & \texttt{+ -} \\
+3 & \texttt{< <= > >=} \\
+4 & \texttt{== !=} \\
+5 & \texttt{and} \\
+6 & \texttt{or} \\
+\hline
+\end{longtable}
+
+\section{Annex C (Normative) --- Grammar Summary}
+EBNF fragments collected from §5.
+
+\section{Annex D (Normative) --- ABI}
+Registers: System V AMD64.  
+Integers: 64-bit.  
+Strings: UTF-8 null-terminated.  
+Heap management: implementation-defined.
+
+\section{Annex E (Informative) --- Error Classes}
+Errors are never fatal; see §E.1–E.3.
+
+\section{Annex F (Informative) --- Example Programs}
+\subsection*{Hello World}
+\begin{lstlisting}
+say "Hello, World!"
+\end{lstlisting}
+
+\subsection*{Fibonacci}
+\begin{lstlisting}
+do fib(n)
+  if n < 2 then
+    give n
+  else
+    give fib(n-1) + fib(n-2)
+  done
+done
+
+say fib(10)
+\end{lstlisting}
+
+\subsection*{Pattern Match JSON}
+\begin{lstlisting}
+make data { "name":"Alice", "age":30 }
+
+match data with
+  case { "name": n, "age": a }
+    say n
+    say a
+done
+\end{lstlisting}
+
+\section{Annex G (Normative) --- Conformance Levels}
+See §16.
+
+\section{Annex H (Informative) --- Future Directions}
+\begin{itemize}
+\item Generics
+\item Async/await
+\item WASM backend
+\end{itemize}
+
+% ---------------- END ----------------
+\end{document}
