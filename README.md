@@ -1,5 +1,7 @@
 # Crown-Programming-Language
 
+CLI COMPILE EXEAMPLE: crown_cli.exe hello.crown --emit-capsule --emit-ll --run
+
 ---
 
 # 👑 Crown Script Language Specification (v0.3+)
