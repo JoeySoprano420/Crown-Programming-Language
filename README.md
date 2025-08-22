@@ -5,7 +5,7 @@ CLI COMPILE EXEAMPLE: crown_cli.exe hello.crown --emit-capsule --emit-ll --run
 ## clang -c crown_runtime.c -o crown_runtime.exe
 ---
 
-# 👑 Crown Script Language Specification (v0.3+)
+# 👑 Crown Script Language Specification (v1.0+)
 
 ---
 
