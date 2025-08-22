@@ -1,0 +1,10 @@
+say "Hello, World!"
+
+make greeting = "Hello, World!"
+say greeting
+
+do hello()
+  say "Hello, World!"
+done
+
+hello()
