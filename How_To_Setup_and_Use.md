@@ -107,5 +107,58 @@ clang build/crown_runtime.o build/hello.ll -o hello
 ```
 
 ---
+To compile `crown_cli_proj.cpp` using Clang on Windows, you’ll need to make sure Clang is installed and available in your system’s PATH. This file is designed to work with Clang and Visual Studio 2022, and it includes logic to emit LLVM IR and compile it into a native `.exe`.
 
-Would you like a Makefile or shell script to automate this flow? I can scaffold one that builds, runs, and even watches `.crown` files for changes.
+Here’s a step-by-step guide to compile it:
+
+---
+
+## 🛠️ Prerequisites
+- **Clang/LLVM installed** (via Visual Studio or standalone)
+- **Visual Studio Developer Command Prompt** or a terminal with Clang in PATH
+- **C++14 support** (already used in the file)
+
+---
+
+## ⚙️ Compile Command
+
+Open a terminal and run:
+
+```bash
+clang++ -std=c++14 -O2 -o crown_cli crown_cli_proj.cpp
+```
+
+Or if you're using the Visual Studio Developer Command Prompt:
+
+```cmd
+clang++.exe -std=c++14 -O2 -o crown_cli crown_cli_proj.cpp
+```
+
+This will produce `crown_cli.exe` in the current directory.
+
+---
+
+## 🧪 Run the CLI
+
+Once compiled, you can run it like this:
+
+```cmd
+crown_cli.exe example.crown --emit-capsule --emit-ll --run
+```
+
+This will:
+- Parse `example.crown` into a capsule AST
+- Emit LLVM IR (`example.ll`)
+- Compile it to `example.exe`
+- Optionally run the binary and invoke `crown_runtime.exe` if present
+
+---
+
+## 🧙 Bonus: Runtime Invocation
+
+If `crown_runtime.exe` is in the same folder or on your PATH, the CLI will automatically invoke it unless you pass `--no-rt`.
+
+---
+
+
+
