@@ -1070,7 +1070,7 @@ Crown is a **minimal scripting language** that compiles down to LLVM IR and nati
 * **Backend**: LLVM IR → clang → native code.
 * **Runtime**: lightweight C helpers for arrays/maps.
 
-It’s essentially a **learning + prototyping language**, proving out how to design a DSL that compiles to real binaries with very little runtime overhead.
+It’s essentially a **People's power language**, proving out how to design a Language that compiles to real binaries with very little runtime overhead.
 
 ---
 
